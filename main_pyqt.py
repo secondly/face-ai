@@ -12,6 +12,13 @@ from pathlib import Path
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
 
+# 全局GPU配置
+GPU_CONFIG = {
+    'gpu_available': False,
+    'recommended_config': {},
+    'force_cpu': False
+}
+
 def check_dependencies():
     """检查必要的依赖"""
     try:
@@ -24,6 +31,50 @@ def check_dependencies():
         print(f"❌ 缺少依赖: {e}")
         print("请运行: pip install -r requirements.txt")
         return False
+
+def check_gpu_environment():
+    """检查GPU环境并返回推荐配置"""
+    try:
+        from utils.gpu_detector import GPUDetector
+
+        print("\n" + "=" * 60)
+        print("🔍 正在检测GPU环境...")
+        print("=" * 60)
+
+        detector = GPUDetector()
+        gpu_result = detector.detect_all()
+
+        # 打印详细报告
+        detector.print_detailed_report(gpu_result)
+
+        return gpu_result
+
+    except ImportError as e:
+        print(f"❌ GPU检测模块导入失败: {e}")
+        return {
+            'gpu_available': False,
+            'recommended_config': {
+                'type': 'cpu_only',
+                'provider': 'CPUExecutionProvider',
+                'description': 'CPU处理模式',
+                'performance': 'basic',
+                'gpu_enabled': False,
+                'reason': 'GPU检测模块不可用'
+            }
+        }
+    except Exception as e:
+        print(f"❌ GPU环境检测失败: {e}")
+        return {
+            'gpu_available': False,
+            'recommended_config': {
+                'type': 'cpu_only',
+                'provider': 'CPUExecutionProvider',
+                'description': 'CPU处理模式',
+                'performance': 'basic',
+                'gpu_enabled': False,
+                'reason': f'检测失败: {str(e)}'
+            }
+        }
 
 def check_pyqt5():
     """检查PyQt5是否安装"""
@@ -59,7 +110,7 @@ def check_required_files():
 def run_gui():
     """运行GUI模式"""
     if not check_pyqt5():
-        input("按回车键退出...")
+        # 在打包环境中不使用input()
         return
 
     try:
@@ -84,24 +135,25 @@ def run_gui():
             if not download_success:
                 print("⚠️ 用户取消下载或下载失败")
                 print("注意: 缺少必要文件可能导致功能异常")
-                response = input("是否继续启动程序? (y/N): ").lower()
-                if response != 'y':
-                    return
+                # 在打包环境中直接继续，不等待用户输入
+                print("继续启动程序...")
 
             app.quit()
 
         # 启动主程序
         from gui.pyqt_gui import main as pyqt_main
         print("🎭 启动PyQt5现代化GUI界面...")
-        pyqt_main()
+        pyqt_main(gpu_config=GPU_CONFIG)
 
     except ImportError as e:
         print(f"❌ GUI模块导入失败: {e}")
         print("请确保已安装PyQt5: pip install PyQt5")
-        input("按回车键退出...")
+        # 在打包环境中不使用input()
+        return
     except Exception as e:
         print(f"❌ GUI启动失败: {e}")
-        input("按回车键退出...")
+        # 在打包环境中不使用input()
+        return
 
 def run_cli(args):
     """运行命令行模式"""
@@ -140,21 +192,33 @@ def main():
     """主函数"""
     print("🎭 AI换脸【秘灵】")
     print("=" * 50)
-    
+
     # 检查依赖
     if not check_dependencies():
-        input("按回车键退出...")
+        # 在打包环境中不使用input()
         return
-    
+
+    # 检查GPU环境
+    gpu_result = check_gpu_environment()
+
     # 解析命令行参数
     parser = argparse.ArgumentParser(description="AI换脸应用程序")
     parser.add_argument("--source", "-s", help="源人脸图像路径")
     parser.add_argument("--target", "-t", help="目标图像/视频路径")
     parser.add_argument("--output", "-o", help="输出文件路径")
     parser.add_argument("--gui", action="store_true", help="启动GUI模式")
-    
+    parser.add_argument("--cpu-only", action="store_true", help="强制使用CPU模式")
+
     args = parser.parse_args()
-    
+
+    # 设置全局GPU配置
+    global GPU_CONFIG
+    GPU_CONFIG = {
+        'gpu_available': gpu_result.get('gpu_available', False) and not args.cpu_only,
+        'recommended_config': gpu_result.get('recommended_config', {}),
+        'force_cpu': args.cpu_only
+    }
+
     # 判断运行模式
     if args.gui or (not args.source and not args.target):
         # GUI模式
@@ -165,7 +229,7 @@ def main():
             print("❌ 命令行模式需要指定 --source, --target, --output 参数")
             parser.print_help()
             return
-        
+
         run_cli(args)
 
 if __name__ == "__main__":

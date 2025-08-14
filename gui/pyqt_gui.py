@@ -178,9 +178,9 @@ class ProcessWorker(QThread):
 class ModernFaceSwapGUI(QMainWindow):
     """PyQt5现代化AI换脸GUI"""
     
-    def __init__(self):
+    def __init__(self, gpu_config=None):
         super().__init__()
-        
+
         # 初始化变量
         self.face_swapper = None
         self.source_path = None
@@ -189,20 +189,30 @@ class ModernFaceSwapGUI(QMainWindow):
         self.reference_path = None  # 参考人脸路径
         self.is_processing = False
         self.worker = None
-        
+
+        # GPU配置
+        self.gpu_config = gpu_config or {
+            'gpu_available': False,
+            'recommended_config': {},
+            'force_cpu': False
+        }
+
         # 设置窗口
         self.setWindowTitle("🎭 AI换脸【秘灵】")
         self.setGeometry(100, 100, 1600, 900)
         self.setMinimumSize(1400, 800)
-        
+
         # 设置样式
         self._setup_styles()
-        
+
         # 创建界面
         self._create_widgets()
-        
+
         # 居中显示
         self._center_window()
+
+        # 初始化GPU状态显示
+        self._update_gpu_status()
     
     def _setup_styles(self):
         """设置现代化样式"""
@@ -480,10 +490,15 @@ class ModernFaceSwapGUI(QMainWindow):
         # 第二行：选项和设置
         second_row = QHBoxLayout()
 
-        # GPU选项
+        # GPU选项 - 根据检测结果智能设置
         self.gpu_checkbox = QCheckBox("🚀 GPU加速")
-        self.gpu_checkbox.setChecked(True)
+        self.gpu_checkbox.setChecked(False)  # 默认关闭，由_update_gpu_status设置
         second_row.addWidget(self.gpu_checkbox)
+
+        # GPU状态标签
+        self.gpu_status_label = QLabel("检测中...")
+        self.gpu_status_label.setStyleSheet("color: #666666; font-size: 11px;")
+        second_row.addWidget(self.gpu_status_label)
 
         # 多人脸选择选项
         self.multi_face_checkbox = QCheckBox("🎯 多人脸选择")
@@ -507,6 +522,68 @@ class ModernFaceSwapGUI(QMainWindow):
         second_row.addStretch()
 
         main_layout.addLayout(second_row)
+
+    def _update_gpu_status(self):
+        """更新GPU状态显示"""
+        if not hasattr(self, 'gpu_status_label'):
+            return
+
+        gpu_available = self.gpu_config.get('gpu_available', False)
+        recommended_config = self.gpu_config.get('recommended_config', {})
+        force_cpu = self.gpu_config.get('force_cpu', False)
+
+        if force_cpu:
+            # 强制CPU模式
+            self.gpu_checkbox.setChecked(False)
+            self.gpu_checkbox.setEnabled(False)
+            self.gpu_status_label.setText("强制CPU模式")
+            self.gpu_status_label.setStyleSheet("color: #ff6b6b; font-size: 11px;")
+
+        elif gpu_available:
+            # GPU可用
+            provider = recommended_config.get('provider', 'Unknown')
+            description = recommended_config.get('description', 'GPU加速')
+            performance = recommended_config.get('performance', 'unknown')
+
+            self.gpu_checkbox.setChecked(True)
+            self.gpu_checkbox.setEnabled(True)
+
+            # 根据性能等级设置颜色
+            if performance == 'excellent':
+                color = "#51cf66"  # 绿色
+                icon = "🚀"
+            elif performance == 'good':
+                color = "#74c0fc"  # 蓝色
+                icon = "⚡"
+            else:
+                color = "#ffd43b"  # 黄色
+                icon = "🔧"
+
+            status_text = f"{icon} {description}"
+            self.gpu_status_label.setText(status_text)
+            self.gpu_status_label.setStyleSheet(f"color: {color}; font-size: 11px; font-weight: bold;")
+
+            # 设置详细的工具提示
+            tooltip = f"GPU加速状态: 可用\n"
+            tooltip += f"提供者: {provider}\n"
+            tooltip += f"性能等级: {performance}\n"
+            tooltip += f"原因: {recommended_config.get('reason', '未知')}"
+            self.gpu_checkbox.setToolTip(tooltip)
+
+        else:
+            # GPU不可用
+            reason = recommended_config.get('reason', '未知原因')
+
+            self.gpu_checkbox.setChecked(False)
+            self.gpu_checkbox.setEnabled(False)
+            self.gpu_status_label.setText("❌ GPU不可用")
+            self.gpu_status_label.setStyleSheet("color: #ff6b6b; font-size: 11px;")
+
+            # 设置详细的工具提示
+            tooltip = f"GPU加速状态: 不可用\n"
+            tooltip += f"原因: {reason}\n"
+            tooltip += f"建议: 安装NVIDIA驱动和CUDA，或运行 python scripts/install_gpu_support.py"
+            self.gpu_checkbox.setToolTip(tooltip)
 
     def _create_log_status_panel(self):
         """创建日志和状态面板"""
@@ -892,12 +969,30 @@ class ModernFaceSwapGUI(QMainWindow):
                 try:
                     self.status_updated.emit("正在初始化AI模型...")
                     self.log_message.emit("开始初始化AI模型...", "INFO")
-                    self.log_message.emit(f"GPU加速: {'启用' if self.use_gpu else '禁用'}", "INFO")
+
+                    # 详细的GPU状态日志
+                    if self.use_gpu:
+                        self.log_message.emit("⚡ GPU加速: 启用", "INFO")
+                        try:
+                            import onnxruntime as ort
+                            providers = ort.get_available_providers()
+                            self.log_message.emit(f"📋 可用提供者: {', '.join(providers)}", "INFO")
+
+                            if 'CUDAExecutionProvider' in providers:
+                                self.log_message.emit("🚀 使用CUDA GPU加速", "SUCCESS")
+                            elif 'DmlExecutionProvider' in providers:
+                                self.log_message.emit("⚡ 使用DirectML GPU加速", "SUCCESS")
+                            else:
+                                self.log_message.emit("⚠️ GPU提供者不可用，将回退到CPU", "WARNING")
+                        except Exception as e:
+                            self.log_message.emit(f"❌ GPU检测失败: {e}", "ERROR")
+                    else:
+                        self.log_message.emit("💻 GPU加速: 禁用 (使用CPU模式)", "INFO")
 
                     self.face_swapper = FaceSwapper(use_gpu=self.use_gpu)
 
                     self.status_updated.emit("AI模型初始化完成，就绪")
-                    self.log_message.emit("AI模型初始化完成", "SUCCESS")
+                    self.log_message.emit("✅ AI模型初始化完成", "SUCCESS")
                     self.init_finished.emit(True, "", self.face_swapper)
 
                 except Exception as e:
@@ -1214,7 +1309,7 @@ class ModernFaceSwapGUI(QMainWindow):
         except Exception as e:
             self._log_message(f"清理缓存失败: {e}", "ERROR")
 
-def main():
+def main(gpu_config=None):
     """主函数"""
     app = QApplication(sys.argv)
 
@@ -1223,8 +1318,8 @@ def main():
     app.setApplicationVersion("1.0")
     app.setOrganizationName("AI换脸【秘灵】")
 
-    # 创建主窗口
-    window = ModernFaceSwapGUI()
+    # 创建主窗口，传递GPU配置
+    window = ModernFaceSwapGUI(gpu_config=gpu_config)
     window.show()
 
     # 运行应用

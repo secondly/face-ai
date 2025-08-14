@@ -20,8 +20,8 @@ logger = logging.getLogger(__name__)
 
 class DownloadWorker(QThread):
     """下载工作线程"""
-    
-    progress_updated = pyqtSignal(str, float)  # 消息, 进度百分比
+
+    progress_updated = pyqtSignal(str, object)  # 消息, 进度百分比(可以是None)
     download_finished = pyqtSignal(bool)  # 是否成功
     
     def __init__(self, downloader: AutoDownloader):
@@ -255,10 +255,14 @@ class DownloadManagerDialog(QDialog):
         self.worker.download_finished.connect(self._download_finished)
         self.worker.start()
     
-    def _update_progress(self, message: str, progress: float):
+    def _update_progress(self, message: str, progress):
         """更新进度"""
         self.progress_label.setText(message)
-        self.progress_bar.setValue(int(progress))
+        if progress is not None and isinstance(progress, (int, float)):
+            # 确保进度值在0-100范围内
+            progress_value = max(0, min(100, int(progress)))
+            self.progress_bar.setValue(progress_value)
+        # 如果progress为None或无效，保持当前进度条值不变
     
     def _download_finished(self, success: bool):
         """下载完成"""

@@ -86,17 +86,30 @@ class AutoDownloader:
         
         return True
     
-    def _install_package(self, package_name: str) -> bool:
+    def _install_package(self, package_name: str, progress_callback: Optional[Callable] = None, base_progress: float = 0) -> bool:
         """安装Python包"""
         try:
             logger.info(f"正在安装 {package_name}...")
+            if progress_callback:
+                progress_callback(f"正在安装 {package_name}...", base_progress)
+
             result = subprocess.run([
-                sys.executable, "-m", "pip", "install", package_name
+                sys.executable, "-m", "pip", "install", package_name, "--progress-bar", "off"
             ], check=True, capture_output=True, text=True, timeout=300)
+
             logger.info(f"✅ {package_name} 安装成功")
+            if progress_callback:
+                progress_callback(f"✅ {package_name} 安装完成", base_progress + 2)
             return True
         except subprocess.CalledProcessError as e:
             logger.error(f"❌ {package_name} 安装失败: {e.stderr}")
+            if progress_callback:
+                progress_callback(f"❌ {package_name} 安装失败", base_progress)
+            return False
+        except subprocess.TimeoutExpired:
+            logger.error(f"❌ {package_name} 安装超时")
+            if progress_callback:
+                progress_callback(f"❌ {package_name} 安装超时", base_progress)
             return False
         except subprocess.TimeoutExpired:
             logger.error(f"❌ {package_name} 安装超时")
@@ -127,12 +140,13 @@ class AutoDownloader:
 
             # 1. 安装必要的依赖
             packages = ["onnxruntime", "insightface"]
-            for package in packages:
-                if not self._install_package(package):
+            for i, package in enumerate(packages):
+                base_progress = 20 + (i * 5)
+                if not self._install_package(package, progress_callback, base_progress):
                     return False
 
             if progress_callback:
-                progress_callback("正在下载InsightFace模型包...", 40)
+                progress_callback("正在下载InsightFace模型包...", 30)
 
             # 2. 下载InsightFace模型
             logger.info("📥 下载InsightFace模型...")
@@ -140,18 +154,51 @@ class AutoDownloader:
             import insightface
             from insightface.model_zoo import get_model
 
-            # 下载buffalo_l模型包
+            # 下载buffalo_l模型包 - 分步显示进度
+            if progress_callback:
+                progress_callback("正在初始化buffalo_l模型...", 35)
+
             logger.info("正在下载buffalo_l模型包...")
-            app = insightface.app.FaceAnalysis(name='buffalo_l')
-            app.prepare(ctx_id=-1, det_size=(640, 640))
-            logger.info("✅ buffalo_l模型包下载完成")
+
+            # 创建模拟进度更新
+            import threading
+            import time
+
+            download_complete = threading.Event()
+
+            def simulate_progress():
+                """模拟下载进度"""
+                progress = 35
+                while not download_complete.is_set() and progress < 55:
+                    time.sleep(2)  # 每2秒更新一次
+                    progress += 2
+                    if progress_callback:
+                        progress_callback(f"正在下载buffalo_l模型... {progress-35}/20", progress)
+
+            # 启动进度模拟线程
+            progress_thread = threading.Thread(target=simulate_progress)
+            progress_thread.daemon = True
+            progress_thread.start()
+
+            try:
+                app = insightface.app.FaceAnalysis(name='buffalo_l')
+                app.prepare(ctx_id=-1, det_size=(640, 640))
+                download_complete.set()  # 标记下载完成
+                logger.info("✅ buffalo_l模型包下载完成")
+            except Exception as e:
+                download_complete.set()
+                logger.error(f"buffalo_l下载失败: {e}")
+                return False
 
             if progress_callback:
-                progress_callback("正在下载inswapper模型...", 60)
+                progress_callback("buffalo_l模型下载完成", 60)
 
             # 下载inswapper模型 (如果还没有)
             inswapper_path = self.models_dir / "inswapper_128.onnx"
             if not inswapper_path.exists():
+                if progress_callback:
+                    progress_callback("正在下载inswapper模型...", 65)
+
                 logger.info("正在下载inswapper模型...")
                 try:
                     swapper = get_model('inswapper_128.onnx', download=True, download_zip=True)

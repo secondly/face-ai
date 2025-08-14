@@ -1,0 +1,377 @@
+# AI换脸工具 🎭
+
+> 基于ONNX的高精度AI换脸系统 - 一键换脸，无需训练，支持图像和视频处理
+
+[![Python](https://img.shields.io/badge/Python-3.8%2B-blue.svg)](https://www.python.org/)
+[![ONNX](https://img.shields.io/badge/ONNX-Runtime-green.svg)](https://onnxruntime.ai/)
+[![PyQt5](https://img.shields.io/badge/GUI-PyQt5-orange.svg)](https://pypi.org/project/PyQt5/)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey.svg)]()
+
+## ✨ 特性
+
+- 🎯 **高精度换脸**: 基于InsightFace的先进AI算法
+- 🖼️ **图像处理**: 支持JPG、PNG、BMP等主流图像格式
+- 🎬 **视频处理**: 支持MP4、AVI、MOV等主流视频格式
+- 🎨 **现代GUI**: PyQt5毛玻璃风格的美观界面
+- � **一键安装**: 自动模型下载和环境配置
+- 📊 **实时进度**: 处理进度实时显示，界面不卡死
+- � **智能检测**: 自动检测已安装的依赖，避免重复安装
+- �💻 **跨平台**: Windows、Linux、macOS全平台支持
+- 🚀 **便携版**: 提供Windows MSI安装包，开箱即用
+
+## 🎯 快速开始
+
+### 方式一：Windows MSI安装包 (推荐)
+
+1. **下载安装包**
+   - 下载 `AI换脸工具_v1.0.0_安装包.zip`
+   - 解压到任意目录
+
+2. **运行安装程序**
+   ```bash
+   # 双击运行
+   安装.bat
+   ```
+
+3. **启动程序**
+   - 双击桌面快捷方式 "AI换脸工具"
+   - 或运行安装目录中的 "启动AI换脸工具.bat"
+
+### 方式二：源码安装
+
+```bash
+# 1. 克隆项目
+git clone https://github.com/your-repo/ai-face-swap.git
+cd ai-face-swap
+
+# 2. 安装依赖
+pip install -r requirements.txt
+
+# 3. 启动GUI界面 (推荐)
+python main_pyqt.py
+
+# 4. 首次运行会自动下载模型文件 (约800MB)
+```
+
+### 🎭 基础使用
+
+```bash
+# 启动GUI界面 (推荐)
+python main_pyqt.py
+
+# 命令行处理图像
+python main_pyqt.py --source face.jpg --target photo.jpg --output result.jpg
+
+# 命令行处理视频
+python main_pyqt.py --source face.jpg --target video.mp4 --output result.mp4
+
+# 检查环境和模型状态
+python scripts/check_environment.py
+```
+
+## 📖 详细使用指南
+
+### GUI界面使用
+
+1. **启动应用**
+   ```bash
+   python main_pyqt.py
+   ```
+
+2. **首次运行**
+   - 程序会自动检测缺失的模型文件
+   - 如果缺失，会弹出下载管理器
+   - 点击"开始下载"自动获取所需模型 (约800MB)
+   - 下载过程显示实时进度，界面保持响应
+
+3. **选择文件**
+   - 点击"选择源人脸"按钮选择源人脸图像
+   - 点击"选择目标文件"选择目标图像或视频
+   - 输出路径会自动生成，也可手动修改
+
+4. **开始处理**
+   - 点击"🚀 开始换脸"按钮
+   - 查看实时进度和状态
+   - 支持取消操作
+   - 处理完成后会自动提示
+
+5. **查看结果**
+   - 点击"📁 打开输出文件夹"查看结果
+   - 支持预览处理结果
+
+### 命令行使用
+
+```bash
+# 基本语法
+python main_pyqt.py --source <源人脸> --target <目标文件> --output <输出文件>
+
+# 图像换脸示例
+python main_pyqt.py --source face.jpg --target photo.jpg --output result.jpg
+
+# 视频换脸示例
+python main_pyqt.py --source face.jpg --target video.mp4 --output result.mp4
+
+# 查看帮助
+python main_pyqt.py --help
+```
+
+### 支持的文件格式
+
+**图像格式**
+- 输入：JPG, JPEG, PNG, BMP, TIFF, WEBP
+- 输出：JPG, PNG
+
+**视频格式**
+- 输入：MP4, AVI, MOV, MKV, WMV, FLV
+- 输出：MP4
+
+### 故障排除
+
+**模型文件缺失**
+```bash
+# 使用GUI下载管理器
+python main_pyqt.py
+# 程序会自动检测并提示下载
+
+# 或手动运行模型获取器
+python scripts/simple_model_getter.py
+```
+
+**依赖问题**
+```bash
+# 检查环境
+python scripts/check_environment.py
+
+# 重新安装依赖
+pip install -r requirements.txt
+```
+
+**GPU支持**
+```bash
+# 安装GPU版本的onnxruntime
+pip uninstall onnxruntime
+pip install onnxruntime-gpu
+
+# 或运行GPU支持脚本
+python scripts/install_gpu_support.py
+```
+
+**界面问题**
+```bash
+# 安装PyQt5
+python install_pyqt5.py
+
+# 或手动安装
+pip install PyQt5>=5.15.0
+```
+
+## 📖 文档
+
+| 文档 | 描述 |
+|------|------|
+| [🚀 快速开始指南](快速开始指南.md) | 3分钟快速上手教程 |
+| [📚 操作手册](操作手册.md) | 详细的安装和使用说明 |
+| [🤖 模型获取指南](模型获取指南.md) | AI模型下载和配置指南 |
+| [📦 安装包使用说明](安装包使用说明.md) | Windows MSI安装包详细说明 |
+| [📋 需求文档](需求文档.md) | 完整的功能需求和技术规格 |
+| [📊 项目进度](项目进度跟踪.md) | 开发进度和里程碑跟踪 |
+| [🔧 构建指南](BUILD_GUIDE.md) | 源码构建和打包说明 |
+| [🎬 FFmpeg安装](FFMPEG_INSTALL.md) | FFmpeg安装和配置指南 |
+
+## 🛠️ 技术架构
+
+### 核心技术栈
+- **推理引擎**: ONNX Runtime (GPU/CPU)
+- **计算机视觉**: OpenCV 4.8+
+- **人脸处理**: InsightFace 0.7+
+- **视频处理**: FFmpeg
+- **GUI框架**: PyQt5 5.15+
+- **编程语言**: Python 3.8+
+
+### 核心模型
+- **inswapper_128.onnx** (554MB): 换脸生成模型
+- **scrfd_10g_bnkps.onnx** (16.9MB): 人脸检测和关键点
+- **arcface_r100.onnx** (248MB): 人脸识别和特征提取
+
+### 项目结构
+```
+ai-face-swap/
+├── main_pyqt.py              # 主程序入口
+├── auto_downloader.py        # 自动模型下载器
+├── gui/                      # GUI界面模块
+│   ├── pyqt_gui.py          # 主界面
+│   ├── download_manager.py   # 下载管理器
+│   └── face_selector.py     # 人脸选择器
+├── core/                     # 核心算法模块
+│   └── face_swapper.py      # 换脸算法
+├── scripts/                  # 工具脚本
+├── models/                   # AI模型文件
+├── outputs/                  # 输出结果
+└── requirements.txt          # 依赖列表
+```
+
+## 🎬 使用示例
+
+### GUI界面示例
+1. **图像换脸**
+   - 选择源人脸图片 (face.jpg)
+   - 选择目标图片 (photo.jpg)
+   - 点击"开始换脸"
+   - 查看输出结果
+
+2. **视频换脸**
+   - 选择源人脸图片 (face.jpg)
+   - 选择目标视频 (video.mp4)
+   - 设置输出路径
+   - 开始处理，实时查看进度
+
+### 命令行示例
+```bash
+# 图像换脸
+python main_pyqt.py --source face.jpg --target photo.jpg --output result.jpg
+
+# 视频换脸
+python main_pyqt.py --source face.jpg --target video.mp4 --output result.mp4
+
+# 批量处理 (使用脚本)
+python scripts/batch_process.py --source face.jpg --input-dir videos/ --output-dir results/
+
+# 检查环境
+python scripts/check_environment.py
+
+# 下载模型
+python scripts/simple_model_getter.py
+```
+
+## 📊 性能基准
+
+| 硬件配置 | 分辨率 | 图像处理 | 视频处理 | GPU内存占用 |
+|----------|--------|----------|----------|-------------|
+| RTX 4090 | 1080p | ~1s | ~30fps | ~3GB |
+| RTX 3060 | 1080p | ~2s | ~15fps | ~4GB |
+| RTX 3060 | 720p | ~1s | ~25fps | ~2GB |
+| CPU i7-10700K | 480p | ~10s | ~3fps | N/A |
+
+## 🔧 系统要求
+
+### 最低要求
+- **操作系统**: Windows 10, Ubuntu 18.04, macOS 10.15
+- **Python**: 3.8+ (推荐3.10)
+- **内存**: 8GB RAM
+- **存储**: 3GB 可用空间 (含模型文件)
+- **网络**: 用于下载模型文件 (约800MB)
+
+### 推荐配置
+- **GPU**: NVIDIA GTX 1060 或更高 (RTX 3060+ 最佳)
+- **内存**: 16GB RAM
+- **存储**: SSD 5GB+ 可用空间
+- **CUDA**: 11.8+ (GPU加速)
+
+### Windows MSI安装包要求
+- **操作系统**: Windows 10/11 (64位)
+- **Python**: 3.8+ (会自动检测和提示安装)
+- **Visual C++ Redistributable**: 2015-2022 (通常已预装)
+
+## 📁 项目结构
+
+```
+deep-live-cam/
+├── dlc_batch/              # 主程序包
+│   ├── engine/            # 推理引擎
+│   ├── tracker/           # 人脸跟踪
+│   ├── io/                # 视频处理
+│   ├── ui/                # 用户界面
+│   ├── config/            # 配置管理
+│   ├── utils/             # 工具函数
+│   └── cli.py             # 命令行接口
+├── models/                # ONNX模型文件
+├── scripts/               # 安装和工具脚本
+├── assets/                # 示例资源
+├── videos_in/             # 输入视频目录
+├── outputs/               # 输出结果目录
+├── docs/                  # 文档
+└── tests/                 # 测试用例
+```
+
+## 🚀 开发路线图
+
+### 已完成 ✅
+- [x] 项目架构设计和文档
+- [x] PyQt5现代化GUI界面
+- [x] 核心换脸功能实现
+- [x] 自动模型下载系统
+- [x] Windows MSI安装包
+- [x] 智能依赖检测和安装
+- [x] 实时进度显示和错误处理
+- [x] 图像和视频换脸功能
+- [x] 人脸选择和预览功能
+
+### 进行中 �
+- [ ] 性能优化和GPU加速
+- [ ] 批量处理功能增强
+- [ ] 多人脸处理优化
+
+### 计划中 📋
+- [ ] 实时摄像头换脸
+- [ ] 画质增强算法集成
+- [ ] Linux/macOS安装包
+- [ ] Web界面版本
+- [ ] 移动端支持 (未来)
+
+## 🤝 贡献指南
+
+我们欢迎所有形式的贡献！请查看 [贡献指南](CONTRIBUTING.md) 了解详情。
+
+### 如何贡献
+1. Fork 本仓库
+2. 创建特性分支 (`git checkout -b feature/AmazingFeature`)
+3. 提交更改 (`git commit -m 'Add some AmazingFeature'`)
+4. 推送到分支 (`git push origin feature/AmazingFeature`)
+5. 开启 Pull Request
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+
+## ⚠️ 免责声明
+
+### 合规使用要求
+- ✅ **仅限合规场景**: 请确保在合法、合规的场景下使用本工具
+- ✅ **授权使用**: 必须对所有使用的人脸图像拥有明确的使用授权
+- ✅ **遵守法律**: 严格遵守当地法律法规和平台政策
+- ❌ **禁止滥用**: 严禁用于欺诈、诈骗、恶意传播等非法用途
+
+### 技术限制
+- 本工具基于AI技术，在极端条件下可能存在处理效果不佳的情况
+- 处理结果的质量受源素材质量、光照条件、角度等因素影响
+- 建议在使用前充分测试，确保满足您的具体需求
+
+## 🆘 获取帮助
+
+- 📖 查看 [操作手册](操作手册.md) 获取详细使用说明
+- 📦 查看 [安装包使用说明](安装包使用说明.md) 了解安装包详情
+- 🤖 查看 [模型获取指南](模型获取指南.md) 解决模型问题
+- 🐛 [提交Issue](https://github.com/your-repo/ai-face-swap/issues) 报告问题
+- 💬 [参与讨论](https://github.com/your-repo/ai-face-swap/discussions) 交流经验
+- 📧 技术支持: support@ai-face-swap.com
+
+## 🙏 致谢
+
+感谢以下开源项目的贡献：
+- [InsightFace](https://github.com/deepinsight/insightface) - 人脸分析工具包
+- [ONNX Runtime](https://github.com/microsoft/onnxruntime) - 高性能推理引擎
+- [OpenCV](https://github.com/opencv/opencv) - 计算机视觉库
+- [FFmpeg](https://github.com/FFmpeg/FFmpeg) - 多媒体处理框架
+
+---
+
+<div align="center">
+
+**⭐ 如果这个项目对您有帮助，请给我们一个星标！**
+
+Made with ❤️ by AI Face Swap Team
+
+**🎭 让AI换脸变得简单易用**
+
+</div>
