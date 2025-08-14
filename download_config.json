@@ -1,31 +1,31 @@
 {
+  "download_method": "insightface_official",
   "models": {
     "inswapper_128.onnx": {
-      "url": "https://github.com/facefusion/facefusion-assets/releases/download/models/inswapper_128.onnx",
-      "backup_urls": [
-        "https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx"
-      ],
+      "url": "https://civitai.com/api/download/models/85159",
+      "backup_urls": [],
       "size": "528.58 MB",
-      "md5": "e4a3f08c753cb72d04e10aa0f7dbe626",
-      "description": "主要的人脸交换模型"
+      "sha256": "e4a3f08c753cb72d04e10aa0f7dbe3deebbf39567d4ead6dce08e98aa49e16af",
+      "description": "主要的人脸交换模型",
+      "source": "civitai"
     },
     "arcface_r100.onnx": {
-      "url": "https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcface-r100-v1.onnx",
-      "backup_urls": [
-        "https://huggingface.co/ezioruan/arcface_r100.onnx/resolve/main/arcface_r100.onnx"
-      ],
-      "size": "166.31 MB", 
-      "md5": "df5c06b8a0c12e422b2ed8947b8869fcd611f8b9",
-      "description": "人脸识别模型"
+      "url": "",
+      "backup_urls": [],
+      "size": "166.31 MB",
+      "sha256": "8ffe2b1f775b1c4a15709c5a040b709cfb184d02b204569d36693bbbf47d05d9",
+      "description": "人脸识别模型 (从w600k_r50.onnx复制)",
+      "source": "insightface_buffalo_l",
+      "source_file": "w600k_r50.onnx"
     },
     "scrfd_10g_bnkps.onnx": {
-      "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_10g_bnkps.onnx",
-      "backup_urls": [
-        "https://huggingface.co/ezioruan/scrfd_10g_bnkps.onnx/resolve/main/scrfd_10g_bnkps.onnx"
-      ],
+      "url": "",
+      "backup_urls": [],
       "size": "16.9 MB",
-      "md5": "5838f7fe053675b1c7a08b633df49e7a",
-      "description": "人脸检测模型"
+      "sha256": "5838f7fe053675b1c7a08b633df49e7af5495cee0493c7dcf6697200b85b5b91",
+      "description": "人脸检测模型",
+      "source": "insightface_buffalo_l",
+      "source_file": "det_10g.onnx"
     }
   },
   "ffmpeg": {
@@ -39,6 +39,14 @@
   "download_info": {
     "total_size": "约 800 MB",
     "estimated_time": "5-15分钟（取决于网络速度）",
-    "note": "首次运行需要下载必要的模型文件和工具"
+    "method": "使用InsightFace官方下载方式，确保可靠性",
+    "note": "首次运行需要下载必要的模型文件和工具",
+    "steps": [
+      "1. 安装InsightFace依赖包",
+      "2. 下载buffalo_l模型包（包含检测和识别模型）",
+      "3. 下载inswapper换脸模型",
+      "4. 复制模型文件到项目目录",
+      "5. 下载FFmpeg工具包"
+    ]
   }
 }

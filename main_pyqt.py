@@ -36,16 +36,65 @@ def check_pyqt5():
         print("请运行: pip install PyQt5")
         return False
 
+def check_required_files():
+    """检查必需文件是否存在"""
+    try:
+        from auto_downloader import AutoDownloader
+
+        downloader = AutoDownloader()
+        status = downloader.check_requirements()
+
+        # 检查是否有缺失文件
+        missing_files = []
+        for category, files in status.items():
+            for filename, exists in files.items():
+                if not exists:
+                    missing_files.append(f"{category}/{filename}")
+
+        return len(missing_files) == 0, missing_files
+    except Exception as e:
+        print(f"检查文件时出错: {e}")
+        return False, ["检查失败"]
+
 def run_gui():
     """运行GUI模式"""
     if not check_pyqt5():
         input("按回车键退出...")
         return
-        
+
     try:
+        # 检查必需文件
+        print("🔍 检查必需文件...")
+        files_complete, missing_files = check_required_files()
+
+        if not files_complete:
+            print(f"⚠️ 检测到缺失文件: {len(missing_files)} 个")
+            print("启动下载管理器...")
+
+            # 启动下载管理器
+            from PyQt5.QtWidgets import QApplication
+            import sys
+
+            app = QApplication(sys.argv)
+            app.setApplicationName("AI换脸工具")
+
+            from gui.download_manager import show_download_manager
+            download_success = show_download_manager()
+
+            if not download_success:
+                print("⚠️ 用户取消下载或下载失败")
+                print("注意: 缺少必要文件可能导致功能异常")
+                response = input("是否继续启动程序? (y/N): ").lower()
+                if response != 'y':
+                    return
+
+            app.quit()
+
+        # 启动主程序
         from gui.pyqt_gui import main as pyqt_main
         print("🎭 启动PyQt5现代化GUI界面...")
         pyqt_main()
+
     except ImportError as e:
         print(f"❌ GUI模块导入失败: {e}")
         print("请确保已安装PyQt5: pip install PyQt5")
