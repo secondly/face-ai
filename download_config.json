@@ -1,0 +1,44 @@
+{
+  "models": {
+    "inswapper_128.onnx": {
+      "url": "https://github.com/facefusion/facefusion-assets/releases/download/models/inswapper_128.onnx",
+      "backup_urls": [
+        "https://huggingface.co/ezioruan/inswapper_128.onnx/resolve/main/inswapper_128.onnx"
+      ],
+      "size": "528.58 MB",
+      "md5": "e4a3f08c753cb72d04e10aa0f7dbe626",
+      "description": "主要的人脸交换模型"
+    },
+    "arcface_r100.onnx": {
+      "url": "https://github.com/onnx/models/raw/main/vision/body_analysis/arcface/model/arcface-r100-v1.onnx",
+      "backup_urls": [
+        "https://huggingface.co/ezioruan/arcface_r100.onnx/resolve/main/arcface_r100.onnx"
+      ],
+      "size": "166.31 MB", 
+      "md5": "df5c06b8a0c12e422b2ed8947b8869fcd611f8b9",
+      "description": "人脸识别模型"
+    },
+    "scrfd_10g_bnkps.onnx": {
+      "url": "https://github.com/deepinsight/insightface/releases/download/v0.7/scrfd_10g_bnkps.onnx",
+      "backup_urls": [
+        "https://huggingface.co/ezioruan/scrfd_10g_bnkps.onnx/resolve/main/scrfd_10g_bnkps.onnx"
+      ],
+      "size": "16.9 MB",
+      "md5": "5838f7fe053675b1c7a08b633df49e7a",
+      "description": "人脸检测模型"
+    }
+  },
+  "ffmpeg": {
+    "windows": {
+      "url": "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
+      "size": "约 100 MB",
+      "description": "Windows版本的FFmpeg工具包",
+      "extract_files": ["ffmpeg.exe", "ffplay.exe", "ffprobe.exe"]
+    }
+  },
+  "download_info": {
+    "total_size": "约 800 MB",
+    "estimated_time": "5-15分钟（取决于网络速度）",
+    "note": "首次运行需要下载必要的模型文件和工具"
+  }
+}
