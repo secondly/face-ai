@@ -57,7 +57,7 @@ class DownloadManagerDialog(QDialog):
         self.worker = None
         
         self.setWindowTitle("AI换脸工具 - 首次配置")
-        self.setFixedSize(600, 500)
+        self.setFixedSize(650, 700)  # 增加宽度和高度，适应更大的状态显示区域
         self.setModal(True)
         
         self._setup_ui()
@@ -92,7 +92,8 @@ class DownloadManagerDialog(QDialog):
         status_layout = QVBoxLayout(status_group)
         
         self.status_text = QTextEdit()
-        self.status_text.setMaximumHeight(150)
+        self.status_text.setMinimumHeight(320)  # 增加到320像素，是原来的2倍多
+        self.status_text.setMaximumHeight(400)  # 设置最大高度避免过大
         self.status_text.setReadOnly(True)
         self.status_text.setStyleSheet("""
             QTextEdit {
@@ -100,8 +101,9 @@ class DownloadManagerDialog(QDialog):
                 border-radius: 4px;
                 background-color: #f8f9fa;
                 font-family: 'Consolas', 'Monaco', monospace;
-                font-size: 12px;
-                padding: 10px;
+                font-size: 13px;
+                padding: 15px;
+                line-height: 1.4;
             }
         """)
         status_layout.addWidget(self.status_text)
