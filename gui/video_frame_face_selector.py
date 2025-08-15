@@ -358,7 +358,7 @@ class VideoFrameFaceSelectorDialog(QDialog):
             QTimer.singleShot(100, lambda: self._on_frame_selected(0))
     
     def _load_video_frames(self):
-        """加载视频的所有帧"""
+        """加载视频帧（超过200帧时随机抽取100帧）"""
         try:
             cap = cv2.VideoCapture(str(self.video_path))
             if not cap.isOpened():
@@ -367,15 +367,25 @@ class VideoFrameFaceSelectorDialog(QDialog):
             total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
             fps = cap.get(cv2.CAP_PROP_FPS)
 
-            # 显示所有帧，不进行采样
-            frame_indices = list(range(total_frames))
+            # 根据总帧数决定采样策略
+            if total_frames > 200:
+                # 随机抽取100帧
+                import random
+                frame_indices = sorted(random.sample(range(total_frames), min(100, total_frames)))
+                logger.info(f"视频总帧数: {total_frames}, 随机抽取 {len(frame_indices)} 帧")
+            else:
+                # 加载所有帧
+                frame_indices = list(range(total_frames))
+                logger.info(f"视频总帧数: {total_frames}, 将加载所有帧")
 
-            logger.info(f"视频总帧数: {total_frames}, 将加载所有帧")
+            # 保存原始总帧数和当前帧索引，用于重新随机
+            self.total_frames = total_frames
+            self.current_frame_indices = frame_indices
 
-            # 创建加载进度对话框
-            self._show_loading_dialog(total_frames)
+            # 创建加载进度对话框（显示实际要加载的帧数）
+            self._show_loading_dialog(len(frame_indices))
 
-            # 读取所有帧（只保存缩略图，节省内存）
+            # 读取选中的帧（只保存缩略图，节省内存）
             for i, frame_idx in enumerate(frame_indices):
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
@@ -387,8 +397,8 @@ class VideoFrameFaceSelectorDialog(QDialog):
                     thumbnail = cv2.resize(frame, (120, 80))
                     self.frame_thumbnails.append(thumbnail)
 
-                # 更新进度
-                self._update_loading_progress(i + 1, total_frames)
+                # 更新进度（显示实际进度）
+                self._update_loading_progress(i + 1, len(frame_indices))
 
                 # 处理事件，保持界面响应
                 QApplication.processEvents()
@@ -399,12 +409,97 @@ class VideoFrameFaceSelectorDialog(QDialog):
             self._hide_loading_dialog()
 
             logger.info(f"视频帧加载完成，共 {len(self.frames)} 帧")
-            
+
         except Exception as e:
             # 确保关闭加载对话框
             self._hide_loading_dialog()
             QMessageBox.critical(self, "错误", f"视频加载失败:\n{e}")
             self.reject()
+
+    def _reload_random_frames(self):
+        """重新随机抽取100帧"""
+        if not hasattr(self, 'total_frames') or self.total_frames <= 200:
+            QMessageBox.information(self, "提示", "当前视频帧数不超过200帧，无需重新随机抽取")
+            return
+
+        try:
+            # 清空当前数据
+            self.frames.clear()
+            self.frame_thumbnails.clear()
+
+            # 重新随机抽取
+            import random
+            frame_indices = sorted(random.sample(range(self.total_frames), min(100, self.total_frames)))
+            self.current_frame_indices = frame_indices
+
+            logger.info(f"重新随机抽取 {len(frame_indices)} 帧")
+
+            # 重新加载帧
+            cap = cv2.VideoCapture(str(self.video_path))
+            if not cap.isOpened():
+                raise ValueError("无法打开视频文件")
+
+            # 显示加载进度
+            self._show_loading_dialog(len(frame_indices))
+
+            # 读取选中的帧
+            for i, frame_idx in enumerate(frame_indices):
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                ret, frame = cap.read()
+
+                if ret:
+                    # 保存帧索引（与初始加载保持一致）
+                    self.frames.append((frame_idx, None))
+
+                    # 创建缩略图
+                    thumbnail = cv2.resize(frame, (120, 80))
+                    self.frame_thumbnails.append(thumbnail)
+
+                # 更新进度
+                self._update_loading_progress(i + 1, len(frame_indices))
+                QApplication.processEvents()
+
+            cap.release()
+            self._hide_loading_dialog()
+
+            # 刷新界面
+            self._refresh_frame_display()
+
+            # 默认选择第一帧
+            if self.frames:
+                QTimer.singleShot(100, lambda: self._on_frame_selected(0))
+
+            logger.info(f"重新随机抽取完成，共 {len(self.frames)} 帧")
+
+        except Exception as e:
+            self._hide_loading_dialog()
+            QMessageBox.critical(self, "错误", f"重新随机抽取失败:\n{e}")
+
+    def _refresh_frame_display(self):
+        """刷新帧显示"""
+        if hasattr(self, 'frame_scroll_widget'):
+            # 更新虚拟滚动组件的数据
+            self.frame_scroll_widget.frame_thumbnails = self.frame_thumbnails
+            self.frame_scroll_widget.selected_index = -1
+            # 更新滚动条范围
+            self.frame_scroll_widget.scroll_bar.setMaximum(max(0, len(self.frame_thumbnails) - self.frame_scroll_widget.visible_count))
+            # 重置滚动位置
+            self.frame_scroll_widget.visible_start = 0
+            self.frame_scroll_widget.scroll_bar.setValue(0)
+            # 更新显示
+            self.frame_scroll_widget._update_visible_items()
+
+        # 更新帧信息标签
+        if hasattr(self, 'frame_info_label'):
+            frame_count_text = f"视频共 {getattr(self, 'total_frames', len(self.frames))} 帧"
+            if hasattr(self, 'total_frames') and self.total_frames > 200:
+                frame_count_text += f"，当前显示随机抽取的 {len(self.frames)} 帧"
+            else:
+                frame_count_text += f"，显示所有 {len(self.frames)} 帧"
+            self.frame_info_label.setText(frame_count_text + "，请拖动滚动条选择任意一帧")
+
+        # 清除当前人脸选择
+        self._clear_face_widgets()
 
     def _show_loading_dialog(self, total_frames):
         """显示加载进度对话框"""
@@ -421,8 +516,13 @@ class VideoFrameFaceSelectorDialog(QDialog):
         layout.setSpacing(15)
         layout.setContentsMargins(20, 20, 20, 20)
 
-        # 标题
-        title_label = QLabel("正在读取视频帧，请稍候...")
+        # 标题 - 根据是否随机抽取显示不同文本
+        if hasattr(self, 'total_frames') and self.total_frames > 200:
+            title_text = f"正在随机抽取 {total_frames} 帧，请稍候..."
+        else:
+            title_text = "正在读取视频帧，请稍候..."
+
+        title_label = QLabel(title_text)
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #333;")
         layout.addWidget(title_label)
@@ -510,11 +610,44 @@ class VideoFrameFaceSelectorDialog(QDialog):
         title.setFont(QFont("Arial", 12, QFont.Bold))
         layout.addWidget(title)
         
+        # 帧信息和重新随机按钮的水平布局
+        info_layout = QHBoxLayout()
+
         # 帧信息
-        self.frame_info_label = QLabel(f"视频共 {len(self.frames)} 帧，请拖动滚动条选择任意一帧")
+        frame_count_text = f"视频共 {getattr(self, 'total_frames', len(self.frames))} 帧"
+        if hasattr(self, 'total_frames') and self.total_frames > 200:
+            frame_count_text += f"，当前显示随机抽取的 {len(self.frames)} 帧"
+        else:
+            frame_count_text += f"，显示所有 {len(self.frames)} 帧"
+
+        self.frame_info_label = QLabel(frame_count_text + "，请拖动滚动条选择任意一帧")
         self.frame_info_label.setStyleSheet("color: #666; margin-bottom: 10px;")
-        layout.addWidget(self.frame_info_label)
-        
+        info_layout.addWidget(self.frame_info_label)
+
+        info_layout.addStretch()
+
+        # 重新随机按钮（仅在超过200帧时显示）
+        if hasattr(self, 'total_frames') and self.total_frames > 200:
+            self.resample_button = QPushButton("🎲 重新随机100帧")
+            self.resample_button.clicked.connect(self._reload_random_frames)
+            self.resample_button.setStyleSheet("""
+                QPushButton {
+                    background-color: #28a745;
+                    color: white;
+                    border: none;
+                    padding: 6px 12px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                    font-size: 11px;
+                }
+                QPushButton:hover {
+                    background-color: #218838;
+                }
+            """)
+            info_layout.addWidget(self.resample_button)
+
+        layout.addLayout(info_layout)
+
         # 直接使用虚拟滚动组件，不需要额外的滚动区域
         self.frame_scroll_widget = VirtualFrameScrollWidget(self.frame_thumbnails, self._on_frame_selected)
         self.frame_scroll_widget.setMaximumHeight(200)

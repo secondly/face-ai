@@ -33,11 +33,155 @@ class FaceSwapper:
         self.face_analyser = None
         self.face_swapper = None
 
+        # 错误计数器，用于自动回退
+        self.gpu_error_count = 0
+        self.max_gpu_errors = 5  # 连续5次GPU错误后回退到CPU
+        self.fallback_to_cpu = False
+
+        # GPU内存管理 - 从配置文件加载
+        self._load_gpu_memory_config()
+
+        # 帧计数器，用于控制内存检查频率
+        self.frame_count = 0
+
         # 检测GPU环境
         self.providers = self._get_providers()
         print(f"使用推理提供者: {self.providers}")  # 使用print避免线程问题
 
         self._initialize_models()
+
+    def cleanup_gpu_memory(self):
+        """清理GPU内存（安全版本，避免崩溃）"""
+        try:
+            # 只清理GPU缓存，不删除模型对象（避免崩溃）
+            import gc
+            gc.collect()
+
+            # 如果使用CUDA，清理CUDA缓存
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    logger.info("已清理CUDA缓存")
+            except ImportError:
+                pass
+
+            logger.info("GPU内存清理完成")
+
+        except Exception as e:
+            logger.error(f"GPU内存清理失败: {e}")
+
+    def force_cleanup_models(self):
+        """强制清理模型（仅在程序退出时使用）"""
+        try:
+            # 清理人脸分析器
+            if hasattr(self, 'face_analyser') and self.face_analyser is not None:
+                try:
+                    del self.face_analyser
+                    self.face_analyser = None
+                    logger.info("已清理人脸分析器")
+                except Exception as e:
+                    logger.warning(f"清理人脸分析器失败: {e}")
+
+            # 清理换脸模型
+            if hasattr(self, 'face_swapper') and self.face_swapper is not None:
+                try:
+                    del self.face_swapper
+                    self.face_swapper = None
+                    logger.info("已清理换脸模型")
+                except Exception as e:
+                    logger.warning(f"清理换脸模型失败: {e}")
+
+            # 强制垃圾回收
+            import gc
+            gc.collect()
+
+            # 如果使用DirectML，尝试清理
+            try:
+                import onnxruntime as ort
+                # DirectML没有直接的清理方法，但删除会话会释放内存
+                logger.info("已清理ONNX Runtime会话")
+            except ImportError:
+                pass
+
+            logger.info("GPU内存清理完成")
+
+        except Exception as e:
+            logger.error(f"GPU内存清理失败: {e}")
+
+    def _load_gpu_memory_config(self):
+        """加载GPU内存配置"""
+        try:
+            import json
+            config_file = Path(__file__).parent.parent / "config" / "gpu_memory.json"
+
+            # 默认配置
+            default_config = {
+                "memory_limit_percent": 90,
+                "memory_check_interval": 10,
+                "auto_fallback_enabled": True,
+                "max_gpu_errors": 5
+            }
+
+            if config_file.exists():
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                    # 合并默认配置
+                    for key, value in default_config.items():
+                        if key not in config:
+                            config[key] = value
+            else:
+                config = default_config
+
+            # 应用配置
+            self.gpu_memory_limit_percent = config['memory_limit_percent']
+            self.gpu_memory_check_interval = config['memory_check_interval']
+            self.auto_fallback_enabled = config['auto_fallback_enabled']
+            self.max_gpu_errors = config['max_gpu_errors']
+
+            logger.info(f"GPU内存配置: 限制{self.gpu_memory_limit_percent}%, 检查间隔{self.gpu_memory_check_interval}帧")
+
+        except Exception as e:
+            logger.warning(f"加载GPU内存配置失败，使用默认值: {e}")
+            # 使用默认值
+            self.gpu_memory_limit_percent = 90
+            self.gpu_memory_check_interval = 10
+            self.auto_fallback_enabled = True
+            self.max_gpu_errors = 5
+
+    def _check_gpu_memory_usage(self) -> tuple[bool, float]:
+        """
+        检查GPU内存使用情况
+        返回: (是否可以使用GPU, 当前使用率)
+        """
+        try:
+            from utils.system_monitor import SystemMonitor
+            monitor = SystemMonitor()
+            gpu_info = monitor.get_gpu_info()
+
+            if gpu_info.get('available') and gpu_info.get('gpus'):
+                gpu = gpu_info['gpus'][0]
+                memory_used_mb = gpu['memory_used_mb']
+                memory_total_mb = gpu['memory_total_mb']
+
+                usage_percent = (memory_used_mb / memory_total_mb) * 100
+
+                # 根据使用率决定策略
+                if usage_percent > self.gpu_memory_limit_percent:
+                    logger.warning(f"GPU内存使用率 {usage_percent:.1f}% 超过限制 {self.gpu_memory_limit_percent}%，临时使用CPU")
+                    return False, usage_percent
+                elif usage_percent > (self.gpu_memory_limit_percent - 10):
+                    logger.info(f"GPU内存使用率 {usage_percent:.1f}% 接近限制，谨慎使用GPU")
+                    return True, usage_percent
+                else:
+                    logger.debug(f"GPU内存使用率: {usage_percent:.1f}%，正常使用GPU")
+                    return True, usage_percent
+
+            return True, 0.0  # 如果无法检测，默认允许使用
+
+        except Exception as e:
+            logger.debug(f"GPU内存检查失败: {e}")
+            return True, 0.0  # 检查失败时默认允许使用
 
     def _get_providers(self):
         """获取可用的推理提供者"""
@@ -49,16 +193,30 @@ class FaceSwapper:
                 available_providers = ort.get_available_providers()
                 print(f"可用的ONNX提供者: {available_providers}")
 
-                # 优先使用CUDA
-                if 'CUDAExecutionProvider' in available_providers:
-                    providers.append('CUDAExecutionProvider')
-                    print("检测到CUDA GPU，将使用GPU加速")
-                elif 'DmlExecutionProvider' in available_providers:
+                # 对于NVIDIA MX230等较老GPU，优先使用DirectML
+                if 'DmlExecutionProvider' in available_providers:
                     providers.append('DmlExecutionProvider')
-                    print("检测到DirectML GPU，将使用GPU加速")
+                    print("检测到DirectML GPU，将使用GPU加速 (推荐用于NVIDIA MX系列)")
+                elif 'CUDAExecutionProvider' in available_providers:
+                    # 尝试CUDA，但可能在较老GPU上有兼容性问题
+                    try:
+                        # 简单测试CUDA是否真正可用
+                        test_session = ort.InferenceSession(
+                            # 创建一个最小的测试模型
+                            b'\x08\x01\x12\x0c\x08\x01\x12\x08\x08\x01\x12\x04\x08\x01\x10\x01',
+                            providers=['CUDAExecutionProvider']
+                        )
+                        providers.append('CUDAExecutionProvider')
+                        print("检测到CUDA GPU，将使用GPU加速")
+                    except:
+                        print("CUDA GPU检测失败，回退到DirectML")
+                        if 'DmlExecutionProvider' in available_providers:
+                            providers.append('DmlExecutionProvider')
+                        else:
+                            providers.append('CPUExecutionProvider')
                 else:
                     print("未检测到GPU支持，将使用CPU")
-                    print("提示: 如需GPU加速，请安装 onnxruntime-gpu")
+                    print("提示: 如需GPU加速，请安装 onnxruntime-gpu 或 onnxruntime-directml")
                     providers.append('CPUExecutionProvider')
             except ImportError:
                 print("ONNX Runtime未安装，将使用CPU")
@@ -80,9 +238,21 @@ class FaceSwapper:
                 name='buffalo_l',
                 providers=self.providers
             )
-            # 设置GPU上下文ID
-            ctx_id = 0 if 'CUDAExecutionProvider' in self.providers else -1
+            # 设置GPU上下文ID - DirectML和CUDA都使用0，CPU使用-1
+            ctx_id = 0 if ('CUDAExecutionProvider' in self.providers or 'DmlExecutionProvider' in self.providers) else -1
+            print(f"设置上下文ID: {ctx_id} (providers: {self.providers})")
             self.face_analyser.prepare(ctx_id=ctx_id, det_size=(640, 640))
+
+            # 手动设置所有模型的providers (确保GPU被正确使用)
+            print("为FaceAnalysis中的所有模型设置providers...")
+            for task_name, model in self.face_analyser.models.items():
+                if hasattr(model, 'session'):
+                    try:
+                        model.session.set_providers(self.providers)
+                        actual_providers = model.session.get_providers()
+                        print(f"  {task_name} 模型使用providers: {actual_providers}")
+                    except Exception as e:
+                        print(f"  {task_name} 模型设置providers失败: {e}")
 
             # 初始化换脸模型
             logger.info("正在初始化换脸模型...")
@@ -107,15 +277,24 @@ class FaceSwapper:
                 if not insightface_inswapper.exists():
                     raise FileNotFoundError(f"模型复制失败: {insightface_inswapper}")
 
-                # 加载模型 - 使用完整路径
+                # 加载模型 - 使用完整路径并指定providers
                 from insightface.model_zoo import get_model
                 try:
                     self.face_swapper = get_model('inswapper_128.onnx', download=False)
+                    # 手动设置providers (InsightFace可能不会自动使用)
+                    if hasattr(self.face_swapper, 'session'):
+                        print(f"为INSwapper设置providers: {self.providers}")
+                        self.face_swapper.session.set_providers(self.providers)
                 except:
                     # 如果还是失败，尝试直接指定路径
                     import onnxruntime as ort
                     from insightface.model_zoo.inswapper import INSwapper
-                    self.face_swapper = INSwapper(model_file=str(insightface_inswapper))
+
+                    # 创建带有指定providers的ONNX会话
+                    session = ort.InferenceSession(str(insightface_inswapper), providers=self.providers)
+                    print(f"INSwapper使用providers: {session.get_providers()}")
+
+                    self.face_swapper = INSwapper(model_file=str(insightface_inswapper), session=session)
                 logger.info("inswapper模型加载成功")
             else:
                 raise FileNotFoundError(f"inswapper模型文件不存在: {inswapper_path}\n请运行: python scripts/simple_model_getter.py")
@@ -129,21 +308,123 @@ class FaceSwapper:
     def get_faces(self, image: np.ndarray) -> List:
         """
         检测图像中的人脸
-        
+
         Args:
             image: 输入图像 (BGR格式)
-            
+
         Returns:
             人脸列表，每个人脸包含关键点、边界框、特征等信息
         """
         if self.face_analyser is None:
-            raise RuntimeError("人脸分析器未初始化")
-        
+            # 尝试重新初始化人脸分析器
+            logger.warning("人脸分析器未初始化，尝试重新初始化...")
+            try:
+                self._initialize_models()
+                logger.info("人脸分析器重新初始化成功")
+            except Exception as e:
+                logger.error(f"重新初始化人脸分析器失败: {e}")
+                raise RuntimeError("人脸分析器未初始化且重新初始化失败")
+
+        # 如果使用GPU，按间隔检查内存使用情况
+        if 'DmlExecutionProvider' in self.providers or 'CUDAExecutionProvider' in self.providers:
+            self.frame_count += 1
+
+            # 每隔指定帧数检查一次内存
+            if self.frame_count % self.gpu_memory_check_interval == 0:
+                can_use_gpu, memory_usage = self._check_gpu_memory_usage()
+
+                if not can_use_gpu:
+                    logger.warning(f"GPU内存使用率 {memory_usage:.1f}% 过高，临时使用CPU模式")
+                    # 临时使用CPU处理这一帧
+                    try:
+                        import insightface
+                        temp_analyser = insightface.app.FaceAnalysis(
+                            name='buffalo_l',
+                            providers=['CPUExecutionProvider']
+                        )
+                        temp_analyser.prepare(ctx_id=-1, det_size=(640, 640))
+                        faces = temp_analyser.get(image)
+                        logger.info(f"临时CPU模式检测到 {len(faces)} 个人脸 (GPU内存: {memory_usage:.1f}%)")
+                        return faces
+                    except Exception as cpu_error:
+                        logger.error(f"临时CPU模式失败: {cpu_error}")
+                        # 继续尝试GPU模式
+                elif memory_usage > (self.gpu_memory_limit_percent - 10):
+                    logger.debug(f"GPU内存使用率 {memory_usage:.1f}% 接近限制，继续使用GPU但需谨慎")
+
         try:
             faces = self.face_analyser.get(image)
+            # 成功时重置错误计数
+            self.gpu_error_count = 0
             return faces
         except Exception as e:
+            # 详细记录错误信息
+            import traceback
+            error_details = traceback.format_exc()
             logger.error(f"人脸检测失败: {e}")
+            logger.error(f"详细错误: {error_details}")
+
+            # 检查是否是ONNX Runtime错误
+            if "onnxruntime" in str(e).lower() or "fail" in str(e).lower():
+                self.gpu_error_count += 1
+                logger.warning(f"检测到ONNX Runtime错误 (第{self.gpu_error_count}次)，可能是GPU内存不足或驱动问题")
+
+                # 检查是否是GPU内存相关错误，如果是则立即切换到CPU
+                is_memory_error = any(keyword in str(e).lower() for keyword in [
+                    'memory', 'out of memory', 'cuda', 'directml', 'gpu'
+                ])
+
+                # 如果是内存错误或错误次数过多，永久切换到CPU模式
+                if (is_memory_error or self.gpu_error_count >= self.max_gpu_errors) and not self.fallback_to_cpu:
+                    reason = "GPU内存不足" if is_memory_error else f"GPU错误次数达到{self.max_gpu_errors}次"
+                    logger.warning(f"{reason}，永久切换到CPU模式")
+                    self.fallback_to_cpu = True
+
+                    try:
+                        # 重新初始化为CPU模式
+                        import insightface
+                        logger.info("正在重新初始化为CPU模式...")
+                        self.face_analyser = insightface.app.FaceAnalysis(
+                            name='buffalo_l',
+                            providers=['CPUExecutionProvider']
+                        )
+                        self.face_analyser.prepare(ctx_id=-1, det_size=(640, 640))
+                        self.providers = ['CPUExecutionProvider']
+                        logger.info("已成功切换到CPU模式")
+
+                        # 重新尝试检测
+                        faces = self.face_analyser.get(image)
+                        logger.info(f"CPU模式成功检测到 {len(faces)} 个人脸")
+                        return faces
+
+                    except Exception as cpu_error:
+                        logger.error(f"CPU模式初始化失败: {cpu_error}")
+
+                # 如果已经是CPU模式，直接返回空结果
+                elif self.fallback_to_cpu:
+                    logger.warning("已在CPU模式下，但仍然检测失败")
+                    return []
+
+                # 临时回退到CPU处理这一帧
+                else:
+                    logger.info("尝试临时使用CPU模式处理此帧...")
+                    try:
+                        # 创建临时的CPU分析器
+                        import insightface
+                        temp_analyser = insightface.app.FaceAnalysis(
+                            name='buffalo_l',
+                            providers=['CPUExecutionProvider']
+                        )
+                        temp_analyser.prepare(ctx_id=-1, det_size=(640, 640))
+
+                        # 使用CPU模式检测
+                        faces = temp_analyser.get(image)
+                        logger.info(f"临时CPU模式成功检测到 {len(faces)} 个人脸")
+                        return faces
+
+                    except Exception as cpu_error:
+                        logger.error(f"临时CPU模式也失败: {cpu_error}")
+
             return []
 
     def get_faces_with_info(self, image: np.ndarray) -> List[dict]:
@@ -188,7 +469,43 @@ class FaceSwapper:
 
             return face_info_list
         except Exception as e:
+            # 详细记录错误信息
+            import traceback
+            error_details = traceback.format_exc()
             logger.error(f"人脸检测失败: {e}")
+            logger.error(f"详细错误: {error_details}")
+
+            # 如果是GPU相关错误，尝试回退到CPU
+            if "DirectML" in str(e) or "DML" in str(e) or "GPU" in str(e):
+                logger.warning("检测到GPU相关错误，尝试回退到CPU模式")
+                try:
+                    # 使用CPU模式重新检测
+                    faces = self.get_faces(image)  # 这会触发上面的CPU回退逻辑
+
+                    # 如果成功，重新构建face_info_list
+                    if faces:
+                        face_info_list = []
+                        for i, face in enumerate(faces):
+                            bbox = face.bbox.astype(int)
+                            area = (bbox[2] - bbox[0]) * (bbox[3] - bbox[1])
+
+                            face_info = {
+                                'face': face,
+                                'bbox': bbox,
+                                'area': area,
+                                'confidence': getattr(face, 'det_score', 0.0),
+                                'index': i
+                            }
+                            face_info_list.append(face_info)
+
+                        # 按人脸大小排序
+                        face_info_list.sort(key=lambda x: x['area'], reverse=True)
+                        logger.info(f"CPU模式检测成功，找到 {len(face_info_list)} 个人脸")
+                        return face_info_list
+
+                except Exception as cpu_error:
+                    logger.error(f"CPU模式也失败: {cpu_error}")
+
             return []
 
     def extract_face_preview(self, image: np.ndarray, face_info: dict, size: tuple = (150, 150)) -> Optional[np.ndarray]:
@@ -813,7 +1130,12 @@ class FaceSwapper:
                     break
 
                 # 检测当前帧中的人脸
-                target_faces = self.get_faces(frame)
+                try:
+                    target_faces = self.get_faces(frame)
+                except Exception as e:
+                    # 人脸检测失败，记录错误但继续处理
+                    logger.error(f"帧 {frame_count}: 人脸检测失败: {e}")
+                    target_faces = []
 
                 if target_faces:
                     result_frame = frame.copy()

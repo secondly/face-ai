@@ -213,6 +213,10 @@ class ModernFaceSwapGUI(QMainWindow):
 
         # 初始化GPU状态显示
         self._update_gpu_status()
+
+        # 延迟刷新GPU状态（确保获取最新状态）
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(1000, self._refresh_gpu_config)
     
     def _setup_styles(self):
         """设置现代化样式"""
@@ -345,13 +349,14 @@ class ModernFaceSwapGUI(QMainWindow):
         # 主布局
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(20)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setContentsMargins(20, 20, 0, 20)
 
-        # 标题
+        # 标题 - 确保文字完全显示
         title_label = QLabel("🎭 AI换脸【秘灵】")
         title_label.setAlignment(Qt.AlignCenter)
-        title_label.setFont(QFont("Arial", 20, QFont.Bold))
-        title_label.setStyleSheet("color: #333333; margin: 10px;")
+        title_label.setFont(QFont("Microsoft YaHei", 16, QFont.Bold))  # 使用中文字体，减小字号
+        title_label.setStyleSheet("color: #333333; margin: 0px; padding: 0px;")
+        title_label.setMinimumHeight(25)  # 减小最小高度
         main_layout.addWidget(title_label)
 
         # 创建主水平分割器：左侧所有功能 | 右侧预览
@@ -382,6 +387,83 @@ class ModernFaceSwapGUI(QMainWindow):
 
         # 设置分割比例 (左侧功能:右侧预览 = 3:2)
         main_splitter.setSizes([960, 640])
+
+        # 底部状态栏
+        self._create_status_bar(main_layout)
+
+    def _create_status_bar(self, parent_layout):
+        """创建底部状态栏"""
+        # 状态栏容器 - 缩小高度
+        status_frame = QFrame()
+        status_frame.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        status_frame.setStyleSheet("""
+            QFrame {
+                background-color: #f8f9fa;
+                border: 1px solid #dee2e6;
+                border-radius: 3px;
+                padding: 2px;
+            }
+        """)
+        status_frame.setMaximumHeight(45)  # 增加状态栏高度以容纳文字
+
+        status_layout = QHBoxLayout(status_frame)
+        status_layout.setContentsMargins(8, 5, 8, 5)  # 增加垂直边距
+
+        # 左侧：应用信息 - 适当增大字体
+        app_info_label = QLabel("🎭 AI换脸【秘灵】v1.0")
+        app_info_label.setStyleSheet("color: #495057; font-weight: bold; font-size: 13px;")
+        status_layout.addWidget(app_info_label)
+
+        # 中间：弹性空间
+        status_layout.addStretch()
+
+        # 右侧：系统状态和控制按钮
+        right_status_layout = QHBoxLayout()
+
+        # GPU内存配置按钮 - 增大字体
+        self.gpu_memory_button = QPushButton("💾 内存限制")
+        self.gpu_memory_button.setStyleSheet("""
+            QPushButton {
+                background-color: #007bff;
+                color: white;
+                border: none;
+                padding: 4px 10px;
+                border-radius: 3px;
+                font-size: 12px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #0056b3;
+            }
+        """)
+        self.gpu_memory_button.clicked.connect(self._show_gpu_memory_config)
+        right_status_layout.addWidget(self.gpu_memory_button)
+
+        # 系统状态标签 - 增大字体提高可读性
+        self.system_status_label = QLabel("系统: 初始化中...")
+        self.system_status_label.setStyleSheet("""
+            color: #495057;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 4px 10px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            border: 1px solid #ced4da;
+        """)
+        right_status_layout.addWidget(self.system_status_label)
+
+        status_layout.addLayout(right_status_layout)
+
+        parent_layout.addWidget(status_frame)
+
+        # 启动系统监控定时器 - 减少更新频率避免卡顿
+        from PyQt5.QtCore import QTimer
+        self.monitor_timer = QTimer()
+        self.monitor_timer.timeout.connect(self._update_system_status)
+        self.monitor_timer.start(3000)  # 每3秒更新一次，减少卡顿
+
+        # 立即更新一次状态
+        self._update_system_status()
 
     def _create_file_section(self, parent_layout):
         """创建文件选择区域"""
@@ -493,12 +575,37 @@ class ModernFaceSwapGUI(QMainWindow):
         # GPU选项 - 根据检测结果智能设置
         self.gpu_checkbox = QCheckBox("🚀 GPU加速")
         self.gpu_checkbox.setChecked(False)  # 默认关闭，由_update_gpu_status设置
+        self.gpu_checkbox.stateChanged.connect(self._on_gpu_checkbox_changed)
         second_row.addWidget(self.gpu_checkbox)
 
         # GPU状态标签
         self.gpu_status_label = QLabel("检测中...")
         self.gpu_status_label.setStyleSheet("color: #666666; font-size: 11px;")
         second_row.addWidget(self.gpu_status_label)
+
+        # 系统状态标签将在底部创建
+
+        # GPU配置按钮 (当GPU不可用时显示)
+        self.gpu_config_button = QPushButton("� 一键配置GPU")
+        self.gpu_config_button.setObjectName("gpuConfigButton")
+        self.gpu_config_button.setStyleSheet("""
+            QPushButton#gpuConfigButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 5px 15px;
+                border-radius: 3px;
+                font-weight: bold;
+            }
+            QPushButton#gpuConfigButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.gpu_config_button.clicked.connect(self._show_simple_gpu_install_dialog)
+        self.gpu_config_button.setVisible(False)  # 默认隐藏
+        second_row.addWidget(self.gpu_config_button)
+
+        # GPU内存配置按钮移到底部状态栏
 
         # 多人脸选择选项
         self.multi_face_checkbox = QCheckBox("🎯 多人脸选择")
@@ -523,6 +630,394 @@ class ModernFaceSwapGUI(QMainWindow):
 
         main_layout.addLayout(second_row)
 
+    def _on_gpu_checkbox_changed(self, state):
+        """GPU选项状态改变时的处理"""
+        if state == 2:  # 选中状态
+            # 如果GPU不可用但用户尝试开启，显示配置向导
+            if not self.gpu_config.get('gpu_available', False):
+                self._show_gpu_unavailable_dialog()
+                self.gpu_checkbox.setChecked(False)  # 重置为未选中
+
+    def _show_gpu_unavailable_dialog(self):
+        """显示GPU不可用对话框"""
+        from PyQt5.QtWidgets import QMessageBox
+
+        reason = self.gpu_config.get('recommended_config', {}).get('reason', '未知原因')
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Warning)
+        msg.setWindowTitle("GPU加速不可用")
+        msg.setText("GPU加速当前不可用")
+        msg.setInformativeText(f"原因: {reason}\n\n是否要打开GPU配置向导进行自动配置？")
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg.setDefaultButton(QMessageBox.Yes)
+
+        if msg.exec_() == QMessageBox.Yes:
+            self._open_gpu_config_wizard()
+
+    def _open_gpu_config_wizard(self):
+        """打开GPU配置向导"""
+        try:
+            from gui.gpu_config_wizard import GPUConfigWizard
+            wizard = GPUConfigWizard(self.gpu_config, self)
+            if wizard.exec_() == wizard.Accepted:
+                # 配置完成，重新检测GPU环境
+                self._refresh_gpu_config()
+        except ImportError:
+            # 如果没有GPU配置向导，使用简单的安装对话框
+            self._show_simple_gpu_install_dialog()
+
+    def _show_simple_gpu_install_dialog(self):
+        """显示简单的GPU安装对话框"""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout, QLabel
+        import subprocess
+        import sys
+
+        # 创建自定义对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("🚀 一键GPU配置")
+        dialog.setMinimumSize(500, 400)
+
+        layout = QVBoxLayout()
+
+        # 说明文本
+        info_label = QLabel("🎯 智能GPU配置助手")
+        info_label.setStyleSheet("font-size: 16px; font-weight: bold; margin: 10px;")
+        layout.addWidget(info_label)
+
+        desc_label = QLabel("将自动检测您的硬件环境并安装最适合的GPU加速组件：\n"
+                           "• 🚀 NVIDIA GPU → 安装CUDA支持 (最佳性能)\n"
+                           "• ⚡ AMD/Intel GPU → 安装DirectML支持 (良好性能)\n"
+                           "• 💻 其他情况 → 确保CPU支持 (兼容性最佳)\n\n"
+                           "整个过程大约需要2-5分钟，请保持网络连接。")
+        desc_label.setWordWrap(True)
+        desc_label.setStyleSheet("margin: 10px; color: #666;")
+        layout.addWidget(desc_label)
+
+        # 日志显示区域
+        self.install_log_text = QTextEdit()
+        self.install_log_text.setReadOnly(True)
+        self.install_log_text.setMaximumHeight(200)
+        self.install_log_text.setStyleSheet("background-color: #f5f5f5; font-family: monospace;")
+        layout.addWidget(self.install_log_text)
+
+        # 按钮
+        button_layout = QHBoxLayout()
+
+        self.start_install_btn = QPushButton("🚀 开始配置")
+        self.start_install_btn.clicked.connect(lambda: self._start_one_click_install(dialog))
+        button_layout.addWidget(self.start_install_btn)
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+
+        # 显示对话框
+        dialog.exec_()
+
+    def _start_one_click_install(self, dialog):
+        """开始一键安装"""
+        from PyQt5.QtCore import QThread, pyqtSignal
+        import subprocess
+        import sys
+
+        self.start_install_btn.setEnabled(False)
+        self.start_install_btn.setText("⏳ 配置中...")
+        self.install_log_text.clear()
+        self.install_log_text.append("🚀 开始一键GPU配置...\n")
+
+        # 创建安装线程
+        class OneClickInstallThread(QThread):
+            log_signal = pyqtSignal(str)
+            finished_signal = pyqtSignal(bool, str)
+
+            def run(self):
+                try:
+                    # 使用一键配置脚本
+                    process = subprocess.Popen([
+                        sys.executable, 'scripts/one_click_gpu_setup.py'
+                    ], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                       text=True, bufsize=1, universal_newlines=True)
+
+                    # 实时读取输出
+                    output_lines = []
+                    for line in process.stdout:
+                        line = line.strip()
+                        if line:
+                            self.log_signal.emit(line)
+                            output_lines.append(line)
+
+                    process.wait()
+                    success = process.returncode == 0
+                    full_output = '\n'.join(output_lines)
+
+                    self.finished_signal.emit(success, full_output)
+
+                except Exception as e:
+                    self.finished_signal.emit(False, str(e))
+
+        # 启动安装线程
+        self.install_thread = OneClickInstallThread()
+        self.install_thread.log_signal.connect(self.install_log_text.append)
+        self.install_thread.finished_signal.connect(lambda success, msg: self._on_one_click_install_finished(success, msg, dialog))
+        self.install_thread.start()
+
+    def _on_one_click_install_finished(self, success, message, dialog):
+        """一键安装完成回调"""
+        from PyQt5.QtWidgets import QMessageBox
+
+        self.start_install_btn.setEnabled(True)
+        self.start_install_btn.setText("🚀 开始配置")
+
+        if success:
+            self.install_log_text.append("\n🎉 GPU配置完成!")
+            QMessageBox.information(dialog, "配置完成",
+                                  "🎉 GPU配置完成！\n\n请重启程序以使用GPU加速功能。")
+            dialog.accept()
+            # 重新检测GPU环境
+            self._refresh_gpu_config()
+        else:
+            self.install_log_text.append(f"\n❌ 配置失败: {message}")
+            QMessageBox.critical(dialog, "配置失败",
+                               f"❌ GPU配置失败\n\n错误信息:\n{message}\n\n请检查网络连接或手动配置。")
+
+
+
+    def _refresh_gpu_config(self):
+        """刷新GPU配置"""
+        try:
+            # 重新检测GPU环境
+            from main_pyqt import check_gpu_environment
+            gpu_result = check_gpu_environment()
+
+            # 更新GPU配置
+            self.gpu_config = {
+                'gpu_available': gpu_result.get('gpu_available', False),
+                'recommended_config': gpu_result.get('recommended_config', {}),
+                'force_cpu': False
+            }
+
+            # 更新界面显示
+            self._update_gpu_status()
+
+            self._log_message("GPU配置已刷新", "INFO")
+        except Exception as e:
+            self._log_message(f"刷新GPU配置失败: {e}", "ERROR")
+
+    def _update_system_status(self):
+        """更新系统状态显示"""
+        try:
+            from utils.system_monitor import SystemMonitor
+
+            monitor = SystemMonitor()
+            info = monitor.get_all_info()
+
+            # 格式化状态文本
+            gpu_status = monitor.format_gpu_status(info['gpu'])
+            cpu_status = monitor.format_cpu_status(info['cpu'])
+            memory_status = monitor.format_memory_status(info['memory'])
+
+            # 组合状态文本
+            status_text = f"{gpu_status} | {cpu_status} | {memory_status}"
+
+            # 根据GPU使用率设置颜色
+            color = "#6c757d"  # 默认灰色
+            if info['gpu'].get('available') and info['gpu'].get('gpus'):
+                gpu_usage = info['gpu']['gpus'][0]['utilization_percent']
+                if gpu_usage > 50:
+                    color = "#28a745"  # 绿色 - 高使用率
+                elif gpu_usage > 10:
+                    color = "#007bff"  # 蓝色 - 中等使用率
+                elif gpu_usage > 0:
+                    color = "#fd7e14"  # 橙色 - 低使用率
+                else:
+                    color = "#6c757d"  # 灰色 - 待机
+
+            # 更新显示 - 只在内容变化时更新，减少卡顿
+            if hasattr(self, 'system_status_label'):
+                # 检查是否需要更新（避免不必要的重绘）
+                current_text = self.system_status_label.text()
+                if current_text != status_text:
+                    self.system_status_label.setText(status_text)
+                    self.system_status_label.setStyleSheet(f"""
+                        color: {color};
+                        font-size: 13px;
+                        font-weight: 600;
+                        padding: 4px 10px;
+                        background-color: #e9ecef;
+                        border-radius: 4px;
+                        border: 1px solid #ced4da;
+                    """)
+                    # 只在内容变化时刷新
+                    self.system_status_label.update()
+
+        except Exception as e:
+            # 如果监控失败，显示基本信息 - 增大字体
+            if hasattr(self, 'system_status_label'):
+                self.system_status_label.setText("系统: 监控不可用")
+                self.system_status_label.setStyleSheet("""
+                    color: #dc3545;
+                    font-size: 13px;
+                    font-weight: 600;
+                    padding: 4px 10px;
+                    background-color: #f8d7da;
+                    border-radius: 4px;
+                    border: 1px solid #f5c6cb;
+                """)
+
+    def _show_gpu_memory_config(self):
+        """显示GPU内存配置对话框"""
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QSlider, QPushButton, QCheckBox, QSpinBox, QGroupBox, QFormLayout
+        from PyQt5.QtCore import Qt
+
+        # 加载当前配置
+        try:
+            from scripts.gpu_memory_config import load_config, save_config
+            config = load_config()
+        except:
+            config = {
+                "memory_limit_percent": 90,
+                "memory_check_interval": 10,
+                "auto_fallback_enabled": True,
+                "max_gpu_errors": 5
+            }
+
+        # 创建对话框
+        dialog = QDialog(self)
+        dialog.setWindowTitle("💾 GPU内存配置")
+        dialog.setMinimumSize(400, 300)
+
+        layout = QVBoxLayout(dialog)
+
+        # 标题
+        title_label = QLabel("🎛️ GPU内存使用配置")
+        title_label.setStyleSheet("font-size: 16px; font-weight: bold; margin: 10px;")
+        layout.addWidget(title_label)
+
+        # 内存限制配置
+        memory_group = QGroupBox("内存使用限制")
+        memory_layout = QFormLayout(memory_group)
+
+        # 内存限制滑块
+        memory_slider = QSlider(Qt.Horizontal)
+        memory_slider.setRange(50, 98)
+        memory_slider.setValue(config['memory_limit_percent'])
+        memory_slider.setTickPosition(QSlider.TicksBelow)
+        memory_slider.setTickInterval(10)
+
+        memory_value_label = QLabel(f"{config['memory_limit_percent']}%")
+        memory_value_label.setStyleSheet("font-weight: bold; color: #2196F3;")
+
+        def update_memory_label(value):
+            memory_value_label.setText(f"{value}%")
+
+        memory_slider.valueChanged.connect(update_memory_label)
+
+        memory_h_layout = QHBoxLayout()
+        memory_h_layout.addWidget(memory_slider)
+        memory_h_layout.addWidget(memory_value_label)
+
+        memory_layout.addRow("GPU内存使用限制:", memory_h_layout)
+
+        # 检查间隔
+        interval_spinbox = QSpinBox()
+        interval_spinbox.setRange(1, 50)
+        interval_spinbox.setValue(config['memory_check_interval'])
+        interval_spinbox.setSuffix(" 帧")
+        memory_layout.addRow("内存检查间隔:", interval_spinbox)
+
+        layout.addWidget(memory_group)
+
+        # 自动回退配置
+        fallback_group = QGroupBox("自动回退设置")
+        fallback_layout = QFormLayout(fallback_group)
+
+        # 自动回退开关
+        auto_fallback_checkbox = QCheckBox("启用自动回退到CPU")
+        auto_fallback_checkbox.setChecked(config['auto_fallback_enabled'])
+        fallback_layout.addRow(auto_fallback_checkbox)
+
+        # 最大错误次数
+        max_errors_spinbox = QSpinBox()
+        max_errors_spinbox.setRange(1, 20)
+        max_errors_spinbox.setValue(config['max_gpu_errors'])
+        max_errors_spinbox.setSuffix(" 次")
+        fallback_layout.addRow("最大GPU错误次数:", max_errors_spinbox)
+
+        layout.addWidget(fallback_group)
+
+        # 按钮
+        button_layout = QHBoxLayout()
+
+        # 重置按钮
+        reset_btn = QPushButton("🔄 重置默认")
+        reset_btn.clicked.connect(lambda: self._reset_memory_config(memory_slider, interval_spinbox, auto_fallback_checkbox, max_errors_spinbox))
+        button_layout.addWidget(reset_btn)
+
+        button_layout.addStretch()
+
+        # 取消按钮
+        cancel_btn = QPushButton("❌ 取消")
+        cancel_btn.clicked.connect(dialog.reject)
+        button_layout.addWidget(cancel_btn)
+
+        # 保存按钮
+        save_btn = QPushButton("✅ 保存")
+        save_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold; padding: 8px 16px;")
+        save_btn.clicked.connect(lambda: self._save_memory_config(
+            dialog, memory_slider.value(), interval_spinbox.value(),
+            auto_fallback_checkbox.isChecked(), max_errors_spinbox.value()
+        ))
+        button_layout.addWidget(save_btn)
+
+        layout.addLayout(button_layout)
+
+        dialog.exec_()
+
+    def _reset_memory_config(self, memory_slider, interval_spinbox, auto_fallback_checkbox, max_errors_spinbox):
+        """重置内存配置为默认值"""
+        memory_slider.setValue(90)
+        interval_spinbox.setValue(10)
+        auto_fallback_checkbox.setChecked(True)
+        max_errors_spinbox.setValue(5)
+
+    def _save_memory_config(self, dialog, memory_limit, check_interval, auto_fallback, max_errors):
+        """保存内存配置"""
+        try:
+            from scripts.gpu_memory_config import save_config
+
+            config = {
+                "memory_limit_percent": memory_limit,
+                "memory_check_interval": check_interval,
+                "auto_fallback_enabled": auto_fallback,
+                "max_gpu_errors": max_errors
+            }
+
+            if save_config(config):
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.information(dialog, "配置保存成功",
+                                      f"✅ GPU内存配置已保存！\n\n"
+                                      f"内存限制: {memory_limit}%\n"
+                                      f"检查间隔: 每{check_interval}帧\n"
+                                      f"自动回退: {'启用' if auto_fallback else '禁用'}\n"
+                                      f"最大错误: {max_errors}次\n\n"
+                                      f"配置将在下次处理时生效。")
+                dialog.accept()
+            else:
+                from PyQt5.QtWidgets import QMessageBox
+                QMessageBox.critical(dialog, "保存失败", "❌ 配置保存失败，请检查文件权限。")
+        except Exception as e:
+            from PyQt5.QtWidgets import QMessageBox
+            QMessageBox.critical(dialog, "保存失败", f"❌ 配置保存失败: {e}")
+
+    def _update_gpu_usage_status(self, status_text, color="#888888"):
+        """更新GPU使用状态显示（兼容性方法）"""
+        # 这个方法现在由_update_system_status替代，但保留以兼容现有代码
+        pass
+
     def _update_gpu_status(self):
         """更新GPU状态显示"""
         if not hasattr(self, 'gpu_status_label'):
@@ -538,6 +1033,7 @@ class ModernFaceSwapGUI(QMainWindow):
             self.gpu_checkbox.setEnabled(False)
             self.gpu_status_label.setText("强制CPU模式")
             self.gpu_status_label.setStyleSheet("color: #ff6b6b; font-size: 11px;")
+            self.gpu_config_button.setVisible(False)
 
         elif gpu_available:
             # GPU可用
@@ -547,6 +1043,7 @@ class ModernFaceSwapGUI(QMainWindow):
 
             self.gpu_checkbox.setChecked(True)
             self.gpu_checkbox.setEnabled(True)
+            self.gpu_config_button.setVisible(False)
 
             # 根据性能等级设置颜色
             if performance == 'excellent':
@@ -571,48 +1068,99 @@ class ModernFaceSwapGUI(QMainWindow):
             self.gpu_checkbox.setToolTip(tooltip)
 
         else:
-            # GPU不可用
+            # GPU不可用 - 显示配置按钮
             reason = recommended_config.get('reason', '未知原因')
 
             self.gpu_checkbox.setChecked(False)
             self.gpu_checkbox.setEnabled(False)
             self.gpu_status_label.setText("❌ GPU不可用")
             self.gpu_status_label.setStyleSheet("color: #ff6b6b; font-size: 11px;")
+            self.gpu_config_button.setVisible(True)  # 显示配置按钮
 
             # 设置详细的工具提示
             tooltip = f"GPU加速状态: 不可用\n"
             tooltip += f"原因: {reason}\n"
-            tooltip += f"建议: 安装NVIDIA驱动和CUDA，或运行 python scripts/install_gpu_support.py"
+            tooltip += f"点击'配置GPU'按钮进行一键配置"
             self.gpu_checkbox.setToolTip(tooltip)
 
     def _create_log_status_panel(self):
         """创建日志和状态面板"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
-        # 日志区域
+        # 日志区域 - 减小边框和内边距
         log_group = QGroupBox("📋 执行日志")
+       
+        log_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                margin-top: 5px;
+                padding-top: 5px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 5px 0 5px;
+            }
+        """)
         layout.addWidget(log_group)
 
         log_layout = QVBoxLayout(log_group)
-        log_layout.setContentsMargins(20, 25, 20, 20)
+        log_layout.setContentsMargins(8, 8, 8, 8)  # 减小内边距防止超出容器
 
         self.log_text = QTextEdit()
-        self.log_text.setMaximumHeight(200)
+        self.log_text.setMinimumHeight(200)  # 减小最小高度
+        self.log_text.setMaximumHeight(300)  # 减小最大高度，防止超出容器
+
+        # 设置日志文字样式和滚动
+        self.log_text.setStyleSheet("""
+            QTextEdit {
+                font-family: 'Consolas', 'Monaco', monospace;
+                font-size: 11px;
+                line-height: 1.2;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                padding: 4px;
+                background-color: #fafafa;
+            }
+        """)
+
+        # 确保自动滚动到底部
+        self.log_text.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.log_text.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+
         log_layout.addWidget(self.log_text)
 
         # 初始日志
         self._log_message("=== AI换脸应用程序日志 ===", "INFO")
         self._log_message("点击'🤖 初始化AI'开始使用", "INFO")
 
-        # 状态栏
+        # 状态栏 - 减小样式占用空间
         status_group = QGroupBox("📊 状态")
+        status_group.setStyleSheet("""
+            QGroupBox {
+                font-weight: bold;
+                font-size: 13px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                margin-top: 5px;
+                padding-top: 5px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 8px;
+                padding: 0 5px 0 5px;
+            }
+        """)
         layout.addWidget(status_group)
 
         status_layout = QHBoxLayout(status_group)
-        status_layout.setContentsMargins(20, 25, 20, 20)
+        status_layout.setContentsMargins(8, 8, 8, 8)  # 减小内边距
 
         self.status_label = QLabel("就绪")
-        self.status_label.setFont(QFont("Arial", 16))
+        self.status_label.setFont(QFont("Microsoft YaHei", 12))  # 减小字体大小
         status_layout.addWidget(self.status_label)
 
         status_layout.addStretch()
@@ -768,9 +1316,17 @@ class ModernFaceSwapGUI(QMainWindow):
 
         log_line = f'<span style="color: {color};">[{timestamp}] {prefix} {message}</span><br>'
 
-        # 添加到日志框
+        # 添加到日志框并自动滚动到底部
         self.log_text.insertHtml(log_line)
-        self.log_text.ensureCursorVisible()
+
+        # 确保滚动到底部
+        scrollbar = self.log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+        # 移动光标到末尾
+        cursor = self.log_text.textCursor()
+        cursor.movePosition(cursor.End)
+        self.log_text.setTextCursor(cursor)
 
     def _update_status(self, text):
         """更新状态"""
@@ -980,14 +1536,26 @@ class ModernFaceSwapGUI(QMainWindow):
 
                             if 'CUDAExecutionProvider' in providers:
                                 self.log_message.emit("🚀 使用CUDA GPU加速", "SUCCESS")
+                                # 更新GPU状态显示
+                                if hasattr(self.parent(), '_update_gpu_usage_status'):
+                                    self.parent()._update_gpu_usage_status("CUDA处理中", "#4CAF50")
                             elif 'DmlExecutionProvider' in providers:
                                 self.log_message.emit("⚡ 使用DirectML GPU加速", "SUCCESS")
+                                # 更新GPU状态显示
+                                if hasattr(self.parent(), '_update_gpu_usage_status'):
+                                    self.parent()._update_gpu_usage_status("DirectML处理中", "#2196F3")
                             else:
                                 self.log_message.emit("⚠️ GPU提供者不可用，将回退到CPU", "WARNING")
+                                # 更新CPU状态显示
+                                if hasattr(self.parent(), '_update_gpu_usage_status'):
+                                    self.parent()._update_gpu_usage_status("CPU处理中", "#FF9800")
                         except Exception as e:
                             self.log_message.emit(f"❌ GPU检测失败: {e}", "ERROR")
                     else:
                         self.log_message.emit("💻 GPU加速: 禁用 (使用CPU模式)", "INFO")
+                        # 更新CPU状态显示
+                        if hasattr(self.parent(), '_update_gpu_usage_status'):
+                            self.parent()._update_gpu_usage_status("CPU模式", "#FF9800")
 
                     self.face_swapper = FaceSwapper(use_gpu=self.use_gpu)
 
@@ -1144,21 +1712,50 @@ class ModernFaceSwapGUI(QMainWindow):
     def _stop_face_swap(self):
         """停止换脸处理"""
         if self.is_processing and self.worker:
-            self.worker.stop()
             self._update_status("正在停止处理...")
             self._log_message("用户请求停止处理", "WARNING")
 
             # 禁用停止按钮，防止重复点击
             self.stop_button.setEnabled(False)
 
-            # 温和地等待线程结束，不使用强制终止
+            # 设置停止标志
+            self.worker.stop()
+
+            # 不在这里清理GPU内存，让线程自然结束后再清理
+            # 温和地等待线程结束
             if self.worker.isRunning():
-                self.worker.wait(5000)  # 等待5秒让线程自然结束
+                # 使用定时器异步等待，避免阻塞主线程
+                self._wait_for_worker_finish()
+            else:
+                # 线程已经结束，直接重置状态
+                self._reset_after_stop()
+
+    def _wait_for_worker_finish(self):
+        """异步等待工作线程结束"""
+        if hasattr(self, 'worker') and self.worker and self.worker.isRunning():
+            # 继续等待
+            QTimer.singleShot(500, self._wait_for_worker_finish)
+        else:
+            # 线程已结束，重置状态
+            self._reset_after_stop()
+
+    def _reset_after_stop(self):
+        """停止后重置状态"""
+        try:
+            # 轻量级GPU内存清理（不清理分析器）
+            self._light_cleanup_gpu_memory()
 
             # 重置状态
             self.is_processing = False
             self.start_button.setEnabled(True)
+            self.stop_button.setEnabled(False)
             self.worker = None
+
+            self._update_status("已停止")
+            self._log_message("处理已停止", "INFO")
+
+        except Exception as e:
+            self._log_message(f"停止后重置状态失败: {e}", "WARNING")
 
     def _on_process_finished(self, success):
         """处理完成回调"""
@@ -1166,6 +1763,86 @@ class ModernFaceSwapGUI(QMainWindow):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
 
+        # 清理GPU内存
+        self._cleanup_gpu_memory()
+
+        # 显示完成消息
+        self._show_completion_message(success)
+
+        # 重置GPU状态显示
+        self._update_gpu_usage_status("待机", "#888888")
+
+    def _cleanup_gpu_memory(self):
+        """清理GPU内存（完整版，仅在处理完成时使用）"""
+        try:
+            # 如果有worker线程，清理其GPU内存
+            if hasattr(self, 'worker') and self.worker is not None:
+                if hasattr(self.worker, 'face_swapper') and self.worker.face_swapper is not None:
+                    self.worker.face_swapper.cleanup_gpu_memory()
+
+            # 如果主线程有face_swapper，也清理其GPU内存
+            if hasattr(self, 'face_swapper') and self.face_swapper is not None:
+                self.face_swapper.cleanup_gpu_memory()
+
+            # 强制垃圾回收
+            import gc
+            gc.collect()
+
+            self._log_message("GPU内存已清理", "INFO")
+
+        except Exception as e:
+            self._log_message(f"GPU内存清理失败: {e}", "WARNING")
+
+    def _light_cleanup_gpu_memory(self):
+        """轻量级GPU内存清理（不清理分析器，避免崩溃）"""
+        try:
+            # 只进行基本的垃圾回收和GPU缓存清理
+            import gc
+            gc.collect()
+
+            # 如果有torch，清理GPU缓存
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except ImportError:
+                pass
+
+            self._log_message("轻量级GPU内存清理完成", "INFO")
+
+        except Exception as e:
+            self._log_message(f"轻量级GPU内存清理失败: {e}", "WARNING")
+
+    def closeEvent(self, event):
+        """程序关闭事件"""
+        try:
+            # 如果正在处理，先停止
+            if self.is_processing and self.worker:
+                self._log_message("程序正在关闭，停止当前处理...", "INFO")
+                self.worker.stop()
+
+                # 等待线程结束（最多3秒）
+                if self.worker.isRunning():
+                    self.worker.wait(3000)
+
+            # 强制清理所有模型（程序退出时安全）
+            if hasattr(self, 'worker') and self.worker:
+                if hasattr(self.worker, 'face_swapper') and self.worker.face_swapper:
+                    self.worker.face_swapper.force_cleanup_models()
+
+            if hasattr(self, 'face_swapper') and self.face_swapper:
+                self.face_swapper.force_cleanup_models()
+
+            self._log_message("程序安全退出", "INFO")
+
+        except Exception as e:
+            print(f"程序退出清理失败: {e}")
+
+        # 接受关闭事件
+        event.accept()
+
+    def _show_completion_message(self, success):
+        """显示完成消息"""
         if self.worker and self.worker.stop_requested:
             QMessageBox.information(self, "已停止", "换脸处理已停止")
         elif success:

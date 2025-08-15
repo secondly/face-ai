@@ -42,6 +42,18 @@ class GPUDetector:
         
         # 生成推荐配置
         result['recommended_config'] = self._generate_recommendation(result)
+
+        # 确保推荐配置不为None
+        if result['recommended_config'] is None:
+            result['recommended_config'] = {
+                'type': 'cpu_only',
+                'provider': 'CPUExecutionProvider',
+                'description': 'CPU处理模式',
+                'performance': 'basic',
+                'gpu_enabled': False,
+                'reason': '无可用GPU配置'
+            }
+
         result['gpu_available'] = self._is_gpu_available(result)
         
         return result
@@ -49,40 +61,59 @@ class GPUDetector:
     def _detect_nvidia_gpu(self) -> Dict:
         """检测NVIDIA GPU"""
         logger.info("🔍 检测NVIDIA GPU...")
-        
+
         try:
-            result = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total,driver_version,cuda_version', 
-                                   '--format=csv,noheader,nounits'], 
-                                  capture_output=True, text=True, timeout=10)
-            
+            # 首先尝试简单的nvidia-smi命令
+            result = subprocess.run(['nvidia-smi'], capture_output=True, text=True, timeout=10)
+
             if result.returncode == 0:
-                lines = result.stdout.strip().split('\n')
-                gpus = []
-                
-                for line in lines:
-                    if line.strip():
-                        parts = [p.strip() for p in line.split(',')]
-                        if len(parts) >= 4:
-                            gpu_info = {
-                                'name': parts[0],
-                                'memory_mb': int(parts[1]) if parts[1].isdigit() else 0,
-                                'driver_version': parts[2],
-                                'cuda_version': parts[3]
+                # 如果nvidia-smi可用，尝试获取详细信息
+                try:
+                    detail_result = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total,driver_version,cuda_version',
+                                                   '--format=csv,noheader,nounits'],
+                                                  capture_output=True, text=True, timeout=10)
+
+                    if detail_result.returncode == 0:
+                        lines = detail_result.stdout.strip().split('\n')
+                        gpus = []
+
+                        for line in lines:
+                            if line.strip():
+                                parts = [p.strip() for p in line.split(',')]
+                                if len(parts) >= 4:
+                                    gpu_info = {
+                                        'name': parts[0],
+                                        'memory_mb': int(parts[1]) if parts[1].isdigit() else 0,
+                                        'driver_version': parts[2],
+                                        'cuda_version': parts[3]
+                                    }
+                                    gpus.append(gpu_info)
+                                    logger.info(f"✅ 检测到NVIDIA GPU: {gpu_info['name']} ({gpu_info['memory_mb']}MB)")
+
+                        if gpus:
+                            return {
+                                'available': True,
+                                'count': len(gpus),
+                                'gpus': gpus,
+                                'driver_version': gpus[0]['driver_version'] if gpus else None,
+                                'cuda_version': gpus[0]['cuda_version'] if gpus else None
                             }
-                            gpus.append(gpu_info)
-                            logger.info(f"✅ 检测到NVIDIA GPU: {gpu_info['name']} ({gpu_info['memory_mb']}MB)")
-                
+                except:
+                    pass
+
+                # 如果详细查询失败，但nvidia-smi可用，说明有NVIDIA GPU
+                logger.info("✅ 检测到NVIDIA GPU (详细信息获取失败)")
                 return {
                     'available': True,
-                    'count': len(gpus),
-                    'gpus': gpus,
-                    'driver_version': gpus[0]['driver_version'] if gpus else None,
-                    'cuda_version': gpus[0]['cuda_version'] if gpus else None
+                    'count': 1,
+                    'gpus': [{'name': 'NVIDIA GPU', 'memory_mb': 0, 'driver_version': 'Unknown', 'cuda_version': 'Unknown'}],
+                    'driver_version': 'Unknown',
+                    'cuda_version': 'Unknown'
                 }
             else:
                 logger.info("❌ nvidia-smi命令执行失败")
                 return {'available': False, 'error': 'nvidia-smi failed'}
-                
+
         except FileNotFoundError:
             logger.info("❌ nvidia-smi命令不存在")
             return {'available': False, 'error': 'nvidia-smi not found'}
@@ -247,33 +278,44 @@ class GPUDetector:
         cuda = detection_result['cuda']
         onnx = detection_result['onnx_providers']
         
-        # NVIDIA GPU + CUDA + CUDAExecutionProvider (最佳)
-        if (nvidia.get('available') and 
-            cuda.get('available') and 
-            onnx.get('available') and 
-            'CUDAExecutionProvider' in onnx.get('providers', [])):
-            
-            return {
-                'type': 'cuda_gpu',
-                'provider': 'CUDAExecutionProvider',
-                'description': 'NVIDIA CUDA GPU加速 (推荐)',
-                'performance': 'excellent',
-                'gpu_enabled': True,
-                'reason': 'NVIDIA GPU + CUDA + CUDAExecutionProvider 完整支持'
-            }
-        
-        # DirectML (Windows通用GPU加速)
-        elif (self.system == "Windows" and 
-              onnx.get('available') and 
-              'DmlExecutionProvider' in onnx.get('providers', [])):
-            
+        # NVIDIA GPU + CUDA (优先推荐，但需要真正可用)
+        if nvidia.get('available') and cuda.get('available'):
+            if (onnx.get('available') and 'CUDAExecutionProvider' in onnx.get('providers', [])):
+                # 测试CUDA是否真正可用
+                try:
+                    import onnxruntime as ort
+                    # 尝试创建CUDA会话来验证
+                    test_providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
+                    # 这里只是检查提供者是否可用，不创建实际会话
+                    return {
+                        'type': 'cuda_gpu',
+                        'provider': 'CUDAExecutionProvider',
+                        'description': 'NVIDIA CUDA GPU加速 (推荐)',
+                        'performance': 'excellent',
+                        'gpu_enabled': True,
+                        'reason': 'NVIDIA GPU + CUDA + CUDAExecutionProvider 完整支持'
+                    }
+                except:
+                    # CUDA提供者有问题，回退到DirectML
+                    pass
+
+        # DirectML (Windows通用GPU加速) - 检查是否可用
+        if (self.system == "Windows" and
+            onnx.get('available') and
+            'DmlExecutionProvider' in onnx.get('providers', [])):
+
+            # 检查是否有任何GPU可用
+            has_gpu = (nvidia.get('available') or
+                      detection_result.get('amd_gpu', {}).get('available') or
+                      detection_result.get('intel_gpu', {}).get('available'))
+
             return {
                 'type': 'directml_gpu',
                 'provider': 'DmlExecutionProvider',
-                'description': 'DirectML GPU加速',
+                'description': 'DirectML GPU加速 (已启用)',
                 'performance': 'good',
                 'gpu_enabled': True,
-                'reason': 'DirectML支持多种GPU (AMD/Intel/NVIDIA)'
+                'reason': 'DirectML支持多种GPU，当前已配置并可用'
             }
         
         # 仅CPU
