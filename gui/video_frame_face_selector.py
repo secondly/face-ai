@@ -334,9 +334,12 @@ class VideoFrameFaceSelectorDialog(QDialog):
         self.face_swapper = face_swapper
         self.selected_frame_index = 0
         self.selected_face_indices = []
-        
+
         self.frames = []
         self.frame_thumbnails = []
+
+        # Loading覆盖层
+        self.loading_overlay = None
         self.face_widgets = []
         self.current_faces = []
 
@@ -754,6 +757,104 @@ class VideoFrameFaceSelectorDialog(QDialog):
 
         parent_layout.addLayout(button_layout)
 
+    def _create_loading_overlay(self):
+        """创建loading覆盖层"""
+        if self.loading_overlay is not None:
+            return
+
+        self.loading_overlay = QWidget(self)
+        self.loading_overlay.setStyleSheet("""
+            QWidget {
+                background-color: rgba(0, 0, 0, 0.7);
+                border-radius: 10px;
+            }
+        """)
+
+        layout = QVBoxLayout(self.loading_overlay)
+        layout.setAlignment(Qt.AlignCenter)
+
+        # Loading动画
+        self.loading_movie = QMovie()
+        self.loading_label = QLabel()
+
+        # 创建简单的loading文本
+        loading_text = QLabel("正在检测人脸...")
+        loading_text.setStyleSheet("""
+            QLabel {
+                color: white;
+                font-size: 16px;
+                font-weight: bold;
+                background: transparent;
+            }
+        """)
+        loading_text.setAlignment(Qt.AlignCenter)
+
+        # 添加旋转动画
+        self.loading_animation = QLabel("⟳")
+        self.loading_animation.setStyleSheet("""
+            QLabel {
+                color: white;
+                font-size: 24px;
+                background: transparent;
+            }
+        """)
+        self.loading_animation.setAlignment(Qt.AlignCenter)
+
+        # 旋转动画定时器
+        self.rotation_timer = QTimer()
+        self.rotation_timer.timeout.connect(self._rotate_loading_icon)
+        self.rotation_angle = 0
+
+        layout.addWidget(self.loading_animation)
+        layout.addWidget(loading_text)
+
+        self.loading_overlay.hide()
+
+    def _rotate_loading_icon(self):
+        """旋转loading图标"""
+        self.rotation_angle = (self.rotation_angle + 30) % 360
+        transform = QTransform()
+        transform.rotate(self.rotation_angle)
+        # 简单的文本旋转效果
+        icons = ["⟳", "⟲", "⟳", "⟲"]
+        icon_index = (self.rotation_angle // 90) % len(icons)
+        self.loading_animation.setText(icons[icon_index])
+
+    def _show_loading(self):
+        """显示loading覆盖层"""
+        if self.loading_overlay is None:
+            self._create_loading_overlay()
+
+        # 调整覆盖层大小和位置
+        self.loading_overlay.resize(self.size())
+        self.loading_overlay.move(0, 0)
+        self.loading_overlay.show()
+        self.loading_overlay.raise_()
+
+        # 开始动画
+        self.rotation_timer.start(100)
+
+        # 禁用所有交互
+        self.setEnabled(False)
+
+    def _hide_loading(self):
+        """隐藏loading覆盖层"""
+        if self.loading_overlay is not None:
+            self.loading_overlay.hide()
+
+        # 停止动画
+        if hasattr(self, 'rotation_timer'):
+            self.rotation_timer.stop()
+
+        # 恢复交互
+        self.setEnabled(True)
+
+    def resizeEvent(self, event):
+        """窗口大小改变时调整覆盖层"""
+        super().resizeEvent(event)
+        if self.loading_overlay is not None:
+            self.loading_overlay.resize(self.size())
+
     def _on_frame_selected(self, frame_index):
         """帧被选中"""
         # 设置新选择
@@ -764,48 +865,58 @@ class VideoFrameFaceSelectorDialog(QDialog):
         actual_frame_idx, _ = self.frames[frame_index]
         self.frame_info_label.setText(f"已选择第 {actual_frame_idx + 1} 帧（共 {len(self.frames)} 帧）")
 
-        # 分析该帧的人脸
-        self._analyze_frame_faces(frame_index)
+        # 显示loading并异步分析该帧的人脸
+        self._show_loading()
+
+        # 使用QTimer延迟执行，让loading先显示
+        QTimer.singleShot(50, lambda: self._analyze_frame_faces_async(frame_index))
+
+    def _analyze_frame_faces_async(self, frame_index):
+        """异步分析指定帧的人脸"""
+        try:
+            # 执行人脸分析
+            self._analyze_frame_faces(frame_index)
+        except Exception as e:
+            logger.error(f"异步人脸分析失败: {e}")
+            self.face_info_label.setText(f"人脸分析失败: {e}")
+            self._clear_face_widgets()
+        finally:
+            # 隐藏loading
+            self._hide_loading()
 
     def _analyze_frame_faces(self, frame_index):
         """分析指定帧的人脸"""
-        try:
-            # 重新读取指定帧（因为我们只保存了缩略图）
-            actual_frame_idx, _ = self.frames[frame_index]
-            cap = cv2.VideoCapture(str(self.video_path))
-            cap.set(cv2.CAP_PROP_POS_FRAMES, actual_frame_idx)
-            ret, frame = cap.read()
-            cap.release()
+        # 重新读取指定帧（因为我们只保存了缩略图）
+        actual_frame_idx, _ = self.frames[frame_index]
+        cap = cv2.VideoCapture(str(self.video_path))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, actual_frame_idx)
+        ret, frame = cap.read()
+        cap.release()
 
-            if not ret:
-                self.face_info_label.setText("无法读取该帧，请选择其他帧")
-                self._clear_face_widgets()
-                return
-
-            # 检测人脸
-            face_info_list = self.face_swapper.get_faces_with_info(frame)
-
-            if not face_info_list:
-                self.face_info_label.setText("该帧中未检测到人脸，请选择其他帧")
-                self._clear_face_widgets()
-                return
-
-            # 更新人脸信息
-            self.face_info_label.setText(f"在该帧中检测到 {len(face_info_list)} 个人脸，请勾选要替换的人脸")
-
-            # 提取人脸预览图
-            face_previews = []
-            for face_info in face_info_list:
-                preview = self.face_swapper.extract_face_preview(frame, face_info)
-                face_previews.append(preview)
-
-            # 更新人脸选择器
-            self._update_face_selector(face_info_list, face_previews)
-
-        except Exception as e:
-            logger.error(f"人脸分析失败: {e}")
-            self.face_info_label.setText(f"人脸分析失败: {e}")
+        if not ret:
+            self.face_info_label.setText("无法读取该帧，请选择其他帧")
             self._clear_face_widgets()
+            return
+
+        # 检测人脸
+        face_info_list = self.face_swapper.get_faces_with_info(frame)
+
+        if not face_info_list:
+            self.face_info_label.setText("该帧中未检测到人脸，请选择其他帧")
+            self._clear_face_widgets()
+            return
+
+        # 更新人脸信息
+        self.face_info_label.setText(f"在该帧中检测到 {len(face_info_list)} 个人脸，请勾选要替换的人脸")
+
+        # 提取人脸预览图
+        face_previews = []
+        for face_info in face_info_list:
+            preview = self.face_swapper.extract_face_preview(frame, face_info)
+            face_previews.append(preview)
+
+        # 更新人脸选择器
+        self._update_face_selector(face_info_list, face_previews)
 
     def _update_face_selector(self, face_info_list, face_previews):
         """更新人脸选择器"""

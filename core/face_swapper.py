@@ -395,6 +395,19 @@ class FaceSwapper:
                 logger.error(f"重新初始化人脸分析器失败: {e}")
                 raise RuntimeError("人脸分析器未初始化且重新初始化失败")
 
+        # 检查人脸分析器的模型会话是否有效
+        if hasattr(self.face_analyser, 'models'):
+            for task_name, model in self.face_analyser.models.items():
+                if hasattr(model, 'session') and model.session is None:
+                    logger.warning(f"检测到{task_name}模型会话已失效，重新初始化...")
+                    try:
+                        self._initialize_models()
+                        logger.info("模型会话重新初始化成功")
+                        break
+                    except Exception as e:
+                        logger.error(f"重新初始化模型会话失败: {e}")
+                        raise RuntimeError("模型会话失效且重新初始化失败")
+
         # 如果使用GPU，按间隔检查内存使用情况
         if 'DmlExecutionProvider' in self.providers or 'CUDAExecutionProvider' in self.providers:
             self.frame_count += 1
