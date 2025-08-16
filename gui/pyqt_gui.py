@@ -456,14 +456,24 @@ class ModernFaceSwapGUI(QMainWindow):
 
         parent_layout.addWidget(status_frame)
 
-        # 启动系统监控定时器 - 减少更新频率避免卡顿
-        from PyQt5.QtCore import QTimer
-        self.monitor_timer = QTimer()
-        self.monitor_timer.timeout.connect(self._update_system_status)
-        self.monitor_timer.start(3000)  # 每3秒更新一次，减少卡顿
+        # 初始化系统监控器（单例）
+        self.system_monitor = None
+        self.enable_performance_monitoring = False  # 禁用性能监测，避免界面卡顿
 
-        # 立即更新一次状态
-        self._update_system_status()
+        if self.enable_performance_monitoring:
+            self._init_system_monitor()
+
+            # 启动系统监控定时器 - 大幅减少更新频率
+            from PyQt5.QtCore import QTimer
+            self.monitor_timer = QTimer()
+            self.monitor_timer.timeout.connect(self._update_system_status)
+            self.monitor_timer.start(10000)  # 每10秒更新一次，大幅减少卡顿
+
+            # 立即更新一次状态
+            self._update_system_status()
+        else:
+            # 如果禁用监测，显示静态信息
+            self._show_static_system_info()
 
     def _create_file_section(self, parent_layout):
         """创建文件选择区域"""
@@ -807,13 +817,80 @@ class ModernFaceSwapGUI(QMainWindow):
         except Exception as e:
             self._log_message(f"刷新GPU配置失败: {e}", "ERROR")
 
-    def _update_system_status(self):
-        """更新系统状态显示"""
+    def _init_system_monitor(self):
+        """初始化系统监控器（单例模式）"""
         try:
             from utils.system_monitor import SystemMonitor
+            self.system_monitor = SystemMonitor()
+            # 不启动后台监控线程，避免额外开销
+        except Exception as e:
+            print(f"系统监控器初始化失败: {e}")
+            self.system_monitor = None
 
-            monitor = SystemMonitor()
-            info = monitor.get_all_info()
+    def _show_static_system_info(self):
+        """显示静态系统信息（不实时更新）"""
+        try:
+            import psutil
+            import platform
+
+            # 获取基本系统信息
+            cpu_count = psutil.cpu_count()
+            memory = psutil.virtual_memory()
+            memory_gb = round(memory.total / (1024**3), 1)
+
+            # 检查GPU状态
+            gpu_status = "GPU: 未知"
+            try:
+                import onnxruntime as ort
+                providers = ort.get_available_providers()
+                if 'CUDAExecutionProvider' in providers:
+                    gpu_status = "GPU: CUDA可用"
+                elif 'DmlExecutionProvider' in providers:
+                    gpu_status = "GPU: DirectML可用"
+                else:
+                    gpu_status = "GPU: 仅CPU"
+            except:
+                gpu_status = "GPU: 检测失败"
+
+            # 组合状态文本
+            status_text = f"{gpu_status} | CPU: {cpu_count}核 | 内存: {memory_gb}GB"
+
+            if hasattr(self, 'system_status_label'):
+                self.system_status_label.setText(status_text)
+                self.system_status_label.setStyleSheet("""
+                    color: #495057;
+                    font-size: 13px;
+                    font-weight: 600;
+                    padding: 4px 10px;
+                    background-color: #e9ecef;
+                    border-radius: 4px;
+                    border: 1px solid #ced4da;
+                """)
+
+        except Exception as e:
+            if hasattr(self, 'system_status_label'):
+                self.system_status_label.setText("系统: 信息获取失败")
+                self.system_status_label.setStyleSheet("""
+                    color: #6c757d;
+                    font-size: 13px;
+                    font-weight: 600;
+                    padding: 4px 10px;
+                    background-color: #e9ecef;
+                    border-radius: 4px;
+                    border: 1px solid #ced4da;
+                """)
+
+    def _update_system_status(self):
+        """更新系统状态显示（优化版本）"""
+        try:
+            # 使用单例监控器，避免重复创建
+            if not hasattr(self, 'system_monitor') or self.system_monitor is None:
+                self._init_system_monitor()
+
+            if self.system_monitor is None:
+                raise Exception("系统监控器不可用")
+
+            info = self.system_monitor.get_all_info()
 
             # 格式化状态文本
             gpu_status = monitor.format_gpu_status(info['gpu'])

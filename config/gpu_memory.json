@@ -1,6 +1,10 @@
 {
-  "memory_limit_percent": 98,
-  "memory_check_interval": 10,
-  "auto_fallback_enabled": true,
-  "max_gpu_errors": 5
+    "memory_limit_percent": 98,
+    "memory_check_interval": 15,
+    "auto_fallback_enabled": true,
+    "max_gpu_errors": 5,
+    "cleanup_interval": 50,
+    "force_cpu_mode": false,
+    "gpu_memory_limit_mb": 0,
+    "enable_memory_monitoring": true
 }

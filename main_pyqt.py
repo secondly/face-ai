@@ -114,6 +114,25 @@ def run_gui():
         return
 
     try:
+        # 创建QApplication实例（如果还没有的话）
+        from PyQt5.QtWidgets import QApplication
+        import sys
+
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+            app.setApplicationName("AI换脸工具")
+
+        # 显示启动配置检测界面
+        print("🔍 启动配置检测...")
+        from gui.startup_checker import show_startup_checker
+
+        if not show_startup_checker():
+            print("⚠️ 用户取消启动或配置检测失败")
+            return
+
+        print("✅ 配置检测通过，继续启动...")
+
         # 检查必需文件
         print("🔍 检查必需文件...")
         files_complete, missing_files = check_required_files()
@@ -121,13 +140,6 @@ def run_gui():
         if not files_complete:
             print(f"⚠️ 检测到缺失文件: {len(missing_files)} 个")
             print("启动下载管理器...")
-
-            # 启动下载管理器
-            from PyQt5.QtWidgets import QApplication
-            import sys
-
-            app = QApplication(sys.argv)
-            app.setApplicationName("AI换脸工具")
 
             from gui.download_manager import show_download_manager
             download_success = show_download_manager()
@@ -137,8 +149,6 @@ def run_gui():
                 print("注意: 缺少必要文件可能导致功能异常")
                 # 在打包环境中直接继续，不等待用户输入
                 print("继续启动程序...")
-
-            app.quit()
 
         # 启动主程序
         from gui.pyqt_gui import main as pyqt_main

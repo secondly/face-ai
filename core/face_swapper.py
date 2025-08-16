@@ -45,10 +45,26 @@ class FaceSwapper:
         self.frame_count = 0
 
         # 检测GPU环境
-        self.providers = self._get_providers()
-        print(f"使用推理提供者: {self.providers}")  # 使用print避免线程问题
+        try:
+            self.providers = self._get_providers()
+            print(f"使用推理提供者: {self.providers}")  # 使用print避免线程问题
+        except Exception as e:
+            print(f"GPU环境检测失败: {e}")
+            print("自动降级到CPU模式")
+            self.providers = ['CPUExecutionProvider']
+            self.use_gpu = False
 
-        self._initialize_models()
+        try:
+            self._initialize_models()
+        except Exception as e:
+            print(f"模型初始化失败: {e}")
+            if 'LoadLibrary failed with error 126' in str(e):
+                print("检测到CUDA库兼容性问题，自动切换到CPU模式")
+                self.providers = ['CPUExecutionProvider']
+                self.use_gpu = False
+                self.fallback_to_cpu = True
+                # 重新尝试初始化
+                self._initialize_models()
 
     def cleanup_gpu_memory(self):
         """清理GPU内存（安全版本，避免崩溃）"""
@@ -149,7 +165,7 @@ class FaceSwapper:
             self.auto_fallback_enabled = True
             self.max_gpu_errors = 5
 
-    def _check_gpu_memory_usage(self) -> tuple[bool, float]:
+    def _check_gpu_memory_usage(self) -> Tuple[bool, float]:
         """
         检查GPU内存使用情况
         返回: (是否可以使用GPU, 当前使用率)
@@ -193,27 +209,26 @@ class FaceSwapper:
                 available_providers = ort.get_available_providers()
                 print(f"可用的ONNX提供者: {available_providers}")
 
-                # 对于NVIDIA MX230等较老GPU，优先使用DirectML
-                if 'DmlExecutionProvider' in available_providers:
-                    providers.append('DmlExecutionProvider')
-                    print("检测到DirectML GPU，将使用GPU加速 (推荐用于NVIDIA MX系列)")
-                elif 'CUDAExecutionProvider' in available_providers:
-                    # 尝试CUDA，但可能在较老GPU上有兼容性问题
+                # 优先使用CUDA，因为性能更好
+                if 'CUDAExecutionProvider' in available_providers:
                     try:
                         # 简单测试CUDA是否真正可用
-                        test_session = ort.InferenceSession(
-                            # 创建一个最小的测试模型
-                            b'\x08\x01\x12\x0c\x08\x01\x12\x08\x08\x01\x12\x04\x08\x01\x10\x01',
-                            providers=['CUDAExecutionProvider']
-                        )
+                        print("测试CUDA提供者...")
+                        # 不创建测试会话，直接使用CUDA
                         providers.append('CUDAExecutionProvider')
-                        print("检测到CUDA GPU，将使用GPU加速")
-                    except:
-                        print("CUDA GPU检测失败，回退到DirectML")
+                        print("✅ 将使用CUDA GPU加速")
+                    except Exception as e:
+                        print(f"CUDA GPU测试失败: {e}")
+                        # CUDA失败，尝试DirectML
                         if 'DmlExecutionProvider' in available_providers:
                             providers.append('DmlExecutionProvider')
+                            print("回退到DirectML GPU加速")
                         else:
                             providers.append('CPUExecutionProvider')
+                            print("回退到CPU模式")
+                elif 'DmlExecutionProvider' in available_providers:
+                    providers.append('DmlExecutionProvider')
+                    print("检测到DirectML GPU，将使用GPU加速")
                 else:
                     print("未检测到GPU支持，将使用CPU")
                     print("提示: 如需GPU加速，请安装 onnxruntime-gpu 或 onnxruntime-directml")
@@ -234,10 +249,26 @@ class FaceSwapper:
 
             # 初始化人脸分析器 (检测 + 识别)
             logger.info("正在初始化人脸分析器...")
-            self.face_analyser = insightface.app.FaceAnalysis(
-                name='buffalo_l',
-                providers=self.providers
-            )
+
+            try:
+                self.face_analyser = insightface.app.FaceAnalysis(
+                    name='buffalo_l',
+                    providers=self.providers
+                )
+            except Exception as e:
+                if 'LoadLibrary failed with error 126' in str(e) or 'CUDA' in str(e):
+                    logger.warning("CUDA初始化失败，自动切换到CPU模式")
+                    self.providers = ['CPUExecutionProvider']
+                    self.use_gpu = False
+                    self.fallback_to_cpu = True
+
+                    # 重新尝试CPU模式
+                    self.face_analyser = insightface.app.FaceAnalysis(
+                        name='buffalo_l',
+                        providers=self.providers
+                    )
+                else:
+                    raise
             # 设置GPU上下文ID - DirectML和CUDA都使用0，CPU使用-1
             ctx_id = 0 if ('CUDAExecutionProvider' in self.providers or 'DmlExecutionProvider' in self.providers) else -1
             print(f"设置上下文ID: {ctx_id} (providers: {self.providers})")

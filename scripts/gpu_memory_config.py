@@ -1,201 +1,280 @@
 #!/usr/bin/env python3
 """
-GPU内存配置工具
-允许用户设置GPU内存使用限制
+GPU内存配置管理器
 """
 
-import sys
 import json
+import os
 from pathlib import Path
+from typing import Dict, Any
 
-# 添加项目根目录到Python路径
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root))
-
-def load_config():
-    """加载GPU内存配置"""
-    config_file = project_root / "config" / "gpu_memory.json"
+class GPUMemoryConfig:
+    """GPU内存配置管理器"""
     
-    default_config = {
-        "memory_limit_percent": 90,
-        "memory_check_interval": 10,
-        "auto_fallback_enabled": True,
-        "max_gpu_errors": 5
-    }
+    def __init__(self):
+        self.project_root = Path(__file__).parent.parent
+        self.config_dir = self.project_root / "config"
+        self.config_file = self.config_dir / "gpu_memory.json"
+        
+        # 确保配置目录存在
+        self.config_dir.mkdir(exist_ok=True)
+        
+        # 默认配置
+        self.default_config = {
+            "memory_limit_percent": 90,
+            "memory_check_interval": 10,
+            "auto_fallback_enabled": True,
+            "max_gpu_errors": 5,
+            "cleanup_interval": 50,
+            "force_cpu_mode": False,
+            "gpu_memory_limit_mb": 0,  # 0表示自动检测
+            "enable_memory_monitoring": True
+        }
+        
+        self.config = self.load_config()
     
-    if config_file.exists():
+    def load_config(self) -> Dict[str, Any]:
+        """加载配置"""
         try:
-            with open(config_file, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                # 合并默认配置
-                for key, value in default_config.items():
+            if self.config_file.exists():
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                
+                # 合并默认配置（确保所有键都存在）
+                for key, value in self.default_config.items():
                     if key not in config:
                         config[key] = value
+                
                 return config
+            else:
+                return self.default_config.copy()
         except Exception as e:
-            print(f"加载配置失败: {e}")
-            return default_config
-    else:
-        return default_config
-
-def save_config(config):
-    """保存GPU内存配置"""
-    config_file = project_root / "config" / "gpu_memory.json"
-    config_file.parent.mkdir(exist_ok=True)
+            print(f"加载GPU内存配置失败: {e}")
+            return self.default_config.copy()
     
+    def save_config(self) -> bool:
+        """保存配置"""
+        try:
+            with open(self.config_file, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=4, ensure_ascii=False)
+            return True
+        except Exception as e:
+            print(f"保存GPU内存配置失败: {e}")
+            return False
+    
+    def get(self, key: str, default=None):
+        """获取配置值"""
+        return self.config.get(key, default)
+    
+    def set(self, key: str, value: Any):
+        """设置配置值"""
+        self.config[key] = value
+    
+    def update(self, updates: Dict[str, Any]):
+        """批量更新配置"""
+        self.config.update(updates)
+    
+    def reset_to_default(self):
+        """重置为默认配置"""
+        self.config = self.default_config.copy()
+    
+    def get_all_config(self) -> Dict[str, Any]:
+        """获取所有配置"""
+        return self.config.copy()
+
+def create_gpu_memory_config_gui():
+    """创建GPU内存配置GUI"""
     try:
-        with open(config_file, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-        return True
+        from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, 
+                                   QLabel, QSpinBox, QCheckBox, QPushButton,
+                                   QGroupBox, QFormLayout, QMessageBox)
+        from PyQt5.QtCore import Qt
+        
+        class GPUMemoryConfigDialog(QDialog):
+            def __init__(self, parent=None):
+                super().__init__(parent)
+                self.config_manager = GPUMemoryConfig()
+                self.init_ui()
+                self.load_current_config()
+            
+            def init_ui(self):
+                self.setWindowTitle("GPU内存使用配置")
+                self.setFixedSize(400, 500)
+                
+                layout = QVBoxLayout(self)
+                
+                # 内存限制组
+                memory_group = QGroupBox("内存限制设置")
+                memory_layout = QFormLayout(memory_group)
+                
+                self.memory_limit_spin = QSpinBox()
+                self.memory_limit_spin.setRange(50, 95)
+                self.memory_limit_spin.setSuffix("%")
+                memory_layout.addRow("GPU内存使用限制:", self.memory_limit_spin)
+                
+                self.memory_check_interval_spin = QSpinBox()
+                self.memory_check_interval_spin.setRange(1, 100)
+                self.memory_check_interval_spin.setSuffix(" 帧")
+                memory_layout.addRow("内存检查间隔:", self.memory_check_interval_spin)
+                
+                layout.addWidget(memory_group)
+                
+                # 错误处理组
+                error_group = QGroupBox("错误处理设置")
+                error_layout = QFormLayout(error_group)
+                
+                self.auto_fallback_check = QCheckBox("启用自动回退到CPU")
+                error_layout.addRow(self.auto_fallback_check)
+                
+                self.max_errors_spin = QSpinBox()
+                self.max_errors_spin.setRange(1, 20)
+                self.max_errors_spin.setSuffix(" 次")
+                error_layout.addRow("最大GPU错误次数:", self.max_errors_spin)
+                
+                layout.addWidget(error_group)
+                
+                # 性能优化组
+                perf_group = QGroupBox("性能优化设置")
+                perf_layout = QFormLayout(perf_group)
+                
+                self.cleanup_interval_spin = QSpinBox()
+                self.cleanup_interval_spin.setRange(10, 200)
+                self.cleanup_interval_spin.setSuffix(" 帧")
+                perf_layout.addRow("内存清理间隔:", self.cleanup_interval_spin)
+                
+                self.enable_monitoring_check = QCheckBox("启用内存监控")
+                perf_layout.addRow(self.enable_monitoring_check)
+                
+                layout.addWidget(perf_group)
+                
+                # 高级设置组
+                advanced_group = QGroupBox("高级设置")
+                advanced_layout = QFormLayout(advanced_group)
+                
+                self.force_cpu_check = QCheckBox("强制使用CPU模式")
+                advanced_layout.addRow(self.force_cpu_check)
+                
+                self.gpu_memory_limit_spin = QSpinBox()
+                self.gpu_memory_limit_spin.setRange(0, 16384)
+                self.gpu_memory_limit_spin.setSuffix(" MB (0=自动)")
+                advanced_layout.addRow("GPU内存限制:", self.gpu_memory_limit_spin)
+                
+                layout.addWidget(advanced_group)
+                
+                # 按钮组
+                button_layout = QHBoxLayout()
+                
+                self.reset_button = QPushButton("重置默认")
+                self.reset_button.clicked.connect(self.reset_to_default)
+                button_layout.addWidget(self.reset_button)
+                
+                self.cancel_button = QPushButton("取消")
+                self.cancel_button.clicked.connect(self.reject)
+                button_layout.addWidget(self.cancel_button)
+                
+                self.save_button = QPushButton("保存")
+                self.save_button.clicked.connect(self.save_config)
+                button_layout.addWidget(self.save_button)
+                
+                layout.addLayout(button_layout)
+            
+            def load_current_config(self):
+                """加载当前配置到界面"""
+                config = self.config_manager.get_all_config()
+                
+                self.memory_limit_spin.setValue(config['memory_limit_percent'])
+                self.memory_check_interval_spin.setValue(config['memory_check_interval'])
+                self.auto_fallback_check.setChecked(config['auto_fallback_enabled'])
+                self.max_errors_spin.setValue(config['max_gpu_errors'])
+                self.cleanup_interval_spin.setValue(config['cleanup_interval'])
+                self.enable_monitoring_check.setChecked(config['enable_memory_monitoring'])
+                self.force_cpu_check.setChecked(config['force_cpu_mode'])
+                self.gpu_memory_limit_spin.setValue(config['gpu_memory_limit_mb'])
+            
+            def save_config(self):
+                """保存配置"""
+                try:
+                    updates = {
+                        'memory_limit_percent': self.memory_limit_spin.value(),
+                        'memory_check_interval': self.memory_check_interval_spin.value(),
+                        'auto_fallback_enabled': self.auto_fallback_check.isChecked(),
+                        'max_gpu_errors': self.max_errors_spin.value(),
+                        'cleanup_interval': self.cleanup_interval_spin.value(),
+                        'enable_memory_monitoring': self.enable_monitoring_check.isChecked(),
+                        'force_cpu_mode': self.force_cpu_check.isChecked(),
+                        'gpu_memory_limit_mb': self.gpu_memory_limit_spin.value()
+                    }
+                    
+                    self.config_manager.update(updates)
+                    
+                    if self.config_manager.save_config():
+                        QMessageBox.information(self, "保存成功", "GPU内存配置已保存")
+                        self.accept()
+                    else:
+                        QMessageBox.critical(self, "保存失败", "无法保存配置文件")
+                        
+                except Exception as e:
+                    QMessageBox.critical(self, "配置失败", f"保存配置时出错: {e}")
+            
+            def reset_to_default(self):
+                """重置为默认配置"""
+                self.config_manager.reset_to_default()
+                self.load_current_config()
+                QMessageBox.information(self, "重置完成", "已重置为默认配置")
+        
+        return GPUMemoryConfigDialog
+        
+    except ImportError:
+        print("PyQt5未安装，无法创建GUI")
+        return None
+
+# 兼容性函数，供主程序调用
+_global_config_manager = None
+
+def get_config_manager():
+    """获取全局配置管理器实例"""
+    global _global_config_manager
+    if _global_config_manager is None:
+        _global_config_manager = GPUMemoryConfig()
+    return _global_config_manager
+
+def load_config():
+    """加载配置（兼容性函数）"""
+    return get_config_manager().get_all_config()
+
+def save_config(config_dict):
+    """保存配置（兼容性函数）"""
+    try:
+        manager = get_config_manager()
+        manager.update(config_dict)
+        return manager.save_config()
     except Exception as e:
         print(f"保存配置失败: {e}")
         return False
 
-def show_current_config():
-    """显示当前配置"""
-    config = load_config()
-    
-    print("🔧 当前GPU内存配置:")
-    print("=" * 50)
-    print(f"内存使用限制: {config['memory_limit_percent']}%")
-    print(f"内存检查间隔: 每{config['memory_check_interval']}帧")
-    print(f"自动回退: {'启用' if config['auto_fallback_enabled'] else '禁用'}")
-    print(f"最大GPU错误次数: {config['max_gpu_errors']}次")
-    print()
-
-def configure_memory_limit():
-    """配置内存使用限制"""
-    config = load_config()
-    
-    print("🎯 配置GPU内存使用限制")
-    print("=" * 50)
-    print(f"当前限制: {config['memory_limit_percent']}%")
-    print("建议设置:")
-    print("  - 80%: 保守设置，适合多任务环境")
-    print("  - 90%: 平衡设置，适合大多数情况")
-    print("  - 95%: 激进设置，最大化GPU利用率")
-    print()
-    
-    try:
-        new_limit = input("请输入新的内存限制百分比 (50-98): ").strip()
-        if new_limit:
-            limit = int(new_limit)
-            if 50 <= limit <= 98:
-                config['memory_limit_percent'] = limit
-                print(f"✅ 内存限制已设置为 {limit}%")
-            else:
-                print("❌ 无效范围，请输入50-98之间的数值")
-                return False
-    except ValueError:
-        print("❌ 无效输入，请输入数字")
-        return False
-    
-    return save_config(config)
-
-def configure_check_interval():
-    """配置内存检查间隔"""
-    config = load_config()
-    
-    print("⏱️ 配置内存检查间隔")
-    print("=" * 50)
-    print(f"当前间隔: 每{config['memory_check_interval']}帧")
-    print("建议设置:")
-    print("  - 5帧: 频繁检查，响应快但开销大")
-    print("  - 10帧: 平衡设置，适合大多数情况")
-    print("  - 20帧: 较少检查，开销小但响应慢")
-    print()
-    
-    try:
-        new_interval = input("请输入新的检查间隔 (1-50帧): ").strip()
-        if new_interval:
-            interval = int(new_interval)
-            if 1 <= interval <= 50:
-                config['memory_check_interval'] = interval
-                print(f"✅ 检查间隔已设置为每{interval}帧")
-            else:
-                print("❌ 无效范围，请输入1-50之间的数值")
-                return False
-    except ValueError:
-        print("❌ 无效输入，请输入数字")
-        return False
-    
-    return save_config(config)
-
-def configure_auto_fallback():
-    """配置自动回退"""
-    config = load_config()
-    
-    print("🔄 配置自动回退")
-    print("=" * 50)
-    print(f"当前状态: {'启用' if config['auto_fallback_enabled'] else '禁用'}")
-    print("说明:")
-    print("  - 启用: GPU错误时自动切换到CPU模式")
-    print("  - 禁用: GPU错误时停止处理")
-    print()
-    
-    choice = input("是否启用自动回退? (y/n): ").strip().lower()
-    if choice in ['y', 'yes', '是']:
-        config['auto_fallback_enabled'] = True
-        print("✅ 自动回退已启用")
-    elif choice in ['n', 'no', '否']:
-        config['auto_fallback_enabled'] = False
-        print("✅ 自动回退已禁用")
-    else:
-        print("❌ 无效输入")
-        return False
-    
-    return save_config(config)
-
 def main():
     """主函数"""
-    print("🎮 GPU内存配置工具")
-    print("=" * 60)
-    
-    while True:
-        show_current_config()
-        
-        print("请选择操作:")
-        print("1. 配置内存使用限制")
-        print("2. 配置内存检查间隔")
-        print("3. 配置自动回退")
-        print("4. 重置为默认配置")
-        print("5. 退出")
-        print()
-        
-        choice = input("请输入选项 (1-5): ").strip()
-        
-        if choice == '1':
-            configure_memory_limit()
-        elif choice == '2':
-            configure_check_interval()
-        elif choice == '3':
-            configure_auto_fallback()
-        elif choice == '4':
-            # 重置配置
-            default_config = {
-                "memory_limit_percent": 90,
-                "memory_check_interval": 10,
-                "auto_fallback_enabled": True,
-                "max_gpu_errors": 5
-            }
-            if save_config(default_config):
-                print("✅ 配置已重置为默认值")
-            else:
-                print("❌ 重置配置失败")
-        elif choice == '5':
-            print("👋 再见!")
-            break
-        else:
-            print("❌ 无效选项，请重新选择")
-        
-        print("\n" + "=" * 60 + "\n")
+    import sys
+
+    # 测试配置管理器
+    config_manager = GPUMemoryConfig()
+    print("当前GPU内存配置:")
+    for key, value in config_manager.get_all_config().items():
+        print(f"  {key}: {value}")
+
+    # 如果有PyQt5，启动GUI
+    try:
+        from PyQt5.QtWidgets import QApplication
+
+        app = QApplication(sys.argv)
+
+        dialog_class = create_gpu_memory_config_gui()
+        if dialog_class:
+            dialog = dialog_class()
+            dialog.exec_()
+
+    except ImportError:
+        print("PyQt5未安装，仅显示当前配置")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\n❌ 用户中断操作")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ 程序异常: {e}")
-        sys.exit(1)
+    main()
