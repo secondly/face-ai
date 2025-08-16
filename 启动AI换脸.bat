@@ -1,35 +1,50 @@
 @echo off
-echo 🎭 AI换脸工具 - 快速启动
-echo ================================
+title AI Face Swap Tool
 
-echo 📋 正在激活CUDA环境...
-call conda deactivate 2>nul
-call conda activate face-ai-cuda11
+echo.
+echo AI Face Swap Tool - Launcher
+echo =============================
+echo.
 
+echo Checking conda...
+conda --version >nul 2>&1
 if errorlevel 1 (
-    echo ❌ 错误：无法激活face-ai-cuda11环境
-    echo.
-    echo 💡 请先创建CUDA环境，参考：CUDA虚拟环境使用说明.md
-    echo.
+    echo ERROR: conda not found
+    echo Please install Anaconda or Miniconda
     pause
     exit /b 1
 )
 
-echo ✅ 环境激活成功
+echo Checking face-ai-cuda11 environment...
+conda env list | findstr "face-ai-cuda11" >nul
+if errorlevel 1 (
+    echo ERROR: face-ai-cuda11 environment not found
+    echo Please create it first using the setup guide
+    pause
+    exit /b 1
+)
+
+echo Activating environment...
+call conda deactivate 2>nul
+call conda activate face-ai-cuda11
+
+if errorlevel 1 (
+    echo ERROR: Failed to activate environment
+    pause
+    exit /b 1
+)
+
+echo Environment activated successfully
+echo Current Python version:
+python --version
+
 echo.
-echo 🔍 检查环境状态...
-echo 当前Python路径:
-where python
-echo.
-echo 当前环境:
-conda info --envs | findstr "*"
-echo.
-echo 🚀 正在启动AI换脸工具...
+echo Starting AI Face Swap Tool...
 python main_pyqt.py
 
 if errorlevel 1 (
     echo.
-    echo ❌ 程序启动失败
-    echo 💡 请检查依赖是否正确安装
+    echo ERROR: Program failed to start
+    echo Check dependencies and try again
     pause
 )
