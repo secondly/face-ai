@@ -137,3 +137,6 @@ logs/
 # 测试文件
 test_images/
 test_videos/
+
+# coda虚拟环境
+cuda_env/

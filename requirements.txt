@@ -1,8 +1,8 @@
 # AI Face Swap Tool Dependencies
 
 # Core inference engine
-onnxruntime>=1.15.0
-onnxruntime-gpu>=1.15.0
+# onnxruntime>=1.15.0   # for CPU
+onnxruntime-gpu>=1.15.0 # for GPU
 
 # Computer vision
 opencv-python>=4.8.0

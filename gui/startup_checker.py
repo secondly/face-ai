@@ -76,9 +76,28 @@ class StartupCheckerDialog(QDialog):
     def _check_cuda_environment(self):
         """检查CUDA环境并显示提示"""
         import os
+        import sys
         conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
+        python_path = sys.executable
 
-        if conda_env != 'face-ai-cuda11':
+        # 检查是否在项目内的cuda_env环境中
+        project_cuda_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cuda_env')
+        is_project_env = project_cuda_env in python_path
+
+        # 检查conda环境名称是否包含cuda_env路径
+        is_conda_project_env = conda_env and 'cuda_env' in conda_env
+
+        # 调试信息
+        print(f"DEBUG: conda_env = '{conda_env}'")
+        print(f"DEBUG: python_path = '{python_path}'")
+        print(f"DEBUG: project_cuda_env = '{project_cuda_env}'")
+        print(f"DEBUG: is_project_env = {is_project_env}")
+        print(f"DEBUG: is_conda_project_env = {is_conda_project_env}")
+
+        # 接受的环境：face-ai-cuda11 或项目内的cuda_env
+        valid_envs = ['face-ai-cuda11']
+
+        if conda_env not in valid_envs and not is_project_env and not is_conda_project_env:
             from PyQt5.QtWidgets import QMessageBox
             msg = QMessageBox(self)
             msg.setIcon(QMessageBox.Warning)
@@ -86,8 +105,12 @@ class StartupCheckerDialog(QDialog):
             msg.setText("检测到您不在推荐的CUDA环境中运行！")
             msg.setInformativeText(
                 f"当前环境: {conda_env if conda_env else '未知'}\n"
-                f"推荐环境: face-ai-cuda11\n\n"
+                f"推荐环境: face-ai-cuda11 或项目内的 cuda_env\n\n"
                 f"为了获得最佳GPU加速性能，建议：\n"
+                f"方法1 (项目内环境):\n"
+                f"1. conda activate ./cuda_env\n"
+                f"2. python main_pyqt.py\n\n"
+                f"方法2 (全局环境):\n"
                 f"1. conda activate face-ai-cuda11\n"
                 f"2. python main_pyqt.py\n\n"
                 f"继续使用当前环境可能导致GPU加速不可用。"
@@ -396,7 +419,18 @@ class StartupCheckerDialog(QDialog):
             try:
                 # 检查当前conda环境
                 conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
-                if conda_env != 'face-ai-cuda11':
+                python_path = sys.executable
+
+                # 检查是否在项目内的cuda_env环境中
+                project_cuda_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cuda_env')
+                is_project_env = project_cuda_env in python_path
+
+                # 检查conda环境名称是否包含cuda_env路径
+                is_conda_project_env = conda_env and 'cuda_env' in conda_env
+
+                valid_envs = ['face-ai-cuda11']
+
+                if conda_env not in valid_envs and not is_project_env and not is_conda_project_env:
                     # 不在推荐环境中，检查系统级CUDA
                     import subprocess
                     result_cuda = subprocess.run(['nvcc', '--version'], capture_output=True, text=True, timeout=5)
@@ -406,7 +440,7 @@ class StartupCheckerDialog(QDialog):
                         issues.append("   原因: 这是导致GPU无法工作的根本原因")
                         issues.append("   表现: LoadLibrary failed with error 126")
                         issues.append("   影响: GPU加速已自动降级到CPU模式")
-                        issues.append("   解决方案: 使用face-ai-cuda11环境")
+                        issues.append("   解决方案: 使用face-ai-cuda11环境或项目内cuda_env环境")
                         issues.append("")
                 else:
                     # 在推荐环境中，检查GPU是否正常工作
@@ -558,9 +592,24 @@ class StartupCheckerDialog(QDialog):
             try:
                 # 检查当前conda环境
                 conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
-                if conda_env == 'face-ai-cuda11':
-                    compatibility_info.append("✅ 运行在CUDA 11.8兼容环境中")
-                    compatibility_info.append("🎯 这是推荐的配置环境")
+                python_path = sys.executable
+
+                # 检查是否在项目内的cuda_env环境中
+                project_cuda_env = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'cuda_env')
+                is_project_env = project_cuda_env in python_path
+
+                # 检查conda环境名称是否包含cuda_env路径
+                is_conda_project_env = conda_env and 'cuda_env' in conda_env
+
+                valid_envs = ['face-ai-cuda11']
+
+                if conda_env in valid_envs or is_project_env or is_conda_project_env:
+                    if is_project_env:
+                        compatibility_info.append("✅ 运行在项目内CUDA环境中")
+                        compatibility_info.append("🎯 这是推荐的项目配置环境")
+                    else:
+                        compatibility_info.append("✅ 运行在CUDA 11.8兼容环境中")
+                        compatibility_info.append("🎯 这是推荐的配置环境")
 
                     # 检查ONNX Runtime版本
                     try:
@@ -579,7 +628,7 @@ class StartupCheckerDialog(QDialog):
                     if result_cuda.returncode == 0 and 'release 12' in result_cuda.stdout:
                         compatibility_info.append("🚨 CUDA 12.x版本与ONNX Runtime 1.17.x不兼容！")
                         compatibility_info.append("❌ 这是GPU无法工作的根本原因")
-                        compatibility_info.append("💡 解决方案: 使用face-ai-cuda11环境")
+                        compatibility_info.append("💡 解决方案: 使用face-ai-cuda11环境或项目内cuda_env环境")
                         issues.append("CUDA版本不兼容")
                         cuda_onnx_compatible = False
                     elif result_cuda.returncode == 0 and 'release 11.8' in result_cuda.stdout:

@@ -15,13 +15,26 @@ sys.path.insert(0, str(project_root))
 
 def check_cuda_environment():
     """检查是否在正确的CUDA环境中运行"""
-    # 检查conda环境名称
+    # 检查conda环境名称或项目内环境
     conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
+    python_path = sys.executable
 
-    if conda_env != 'face-ai-cuda11':
+    # 检查是否在项目内的cuda_env环境中
+    project_cuda_env = os.path.join(os.path.dirname(__file__), 'cuda_env')
+    is_project_env = project_cuda_env in python_path
+
+    # 接受的环境：face-ai-cuda11 或项目内的cuda_env
+    valid_envs = ['face-ai-cuda11']
+
+    if conda_env not in valid_envs and not is_project_env:
         print("❌ 错误：请在CUDA虚拟环境中启动程序！")
         print()
         print("🔧 正确的启动方法：")
+        print("方法1 (项目内环境):")
+        print("1. conda activate ./cuda_env")
+        print("2. python main_pyqt.py")
+        print()
+        print("方法2 (全局环境):")
         print("1. conda activate face-ai-cuda11")
         print("2. python main_pyqt.py")
         print()
@@ -29,13 +42,17 @@ def check_cuda_environment():
         print("双击 '启动AI换脸.bat'")
         print()
         print(f"当前环境: {conda_env if conda_env else '未知'}")
-        print("需要环境: face-ai-cuda11")
+        print(f"Python路径: {python_path}")
+        print("需要环境: face-ai-cuda11 或项目内的 cuda_env")
         print()
         print("💡 如果还没有创建环境，请参考 'CUDA虚拟环境使用说明.md'")
         sys.exit(1)
 
-    print(f"✅ 环境检测通过: {conda_env}")
-    print(f"✅ Python路径: {sys.executable}")
+    if is_project_env:
+        print(f"✅ 环境检测通过: 项目内CUDA环境")
+    else:
+        print(f"✅ 环境检测通过: {conda_env}")
+    print(f"✅ Python路径: {python_path}")
 
 # 在程序启动时检查环境
 check_cuda_environment()
