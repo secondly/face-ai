@@ -108,9 +108,37 @@ class FaceSwapper:
                 except Exception as e:
                     logger.warning(f"清理换脸模型失败: {e}")
 
-            # 强制垃圾回收
+            # 先清理模型会话
+            self._cleanup_model_sessions()
+
+            # 强制垃圾回收（程序退出时多执行几次）
             import gc
-            gc.collect()
+            for i in range(10):
+                collected = gc.collect()
+                if collected > 0:
+                    logger.info(f"强制垃圾回收第{i+1}次: 清理了{collected}个对象")
+
+            # 强力清理CUDA缓存
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    # 多次清理确保彻底
+                    for i in range(3):
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                        if hasattr(torch.cuda, 'ipc_collect'):
+                            torch.cuda.ipc_collect()
+
+                    # 重置CUDA上下文（如果可能）
+                    try:
+                        torch.cuda.reset_peak_memory_stats()
+                        logger.info("已重置CUDA内存统计")
+                    except:
+                        pass
+
+                    logger.info("已强力清理CUDA缓存")
+            except ImportError:
+                pass
 
             # 如果使用DirectML，尝试清理
             try:
@@ -120,7 +148,7 @@ class FaceSwapper:
             except ImportError:
                 pass
 
-            logger.info("GPU内存清理完成")
+            logger.info("GPU内存强制清理完成")
 
         except Exception as e:
             logger.error(f"GPU内存清理失败: {e}")
@@ -321,8 +349,19 @@ class FaceSwapper:
                     import onnxruntime as ort
                     from insightface.model_zoo.inswapper import INSwapper
 
-                    # 创建带有指定providers的ONNX会话
-                    session = ort.InferenceSession(str(insightface_inswapper), providers=self.providers)
+                    # 创建带有指定providers的ONNX会话，并优化性能
+                    session_options = ort.SessionOptions()
+                    session_options.enable_mem_pattern = True
+                    session_options.enable_cpu_mem_arena = True
+                    session_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
+                    # 设置并行执行配置
+                    session_options.intra_op_num_threads = 0  # 使用所有可用线程
+                    session_options.inter_op_num_threads = 0  # 使用所有可用线程
+
+                    session = ort.InferenceSession(str(insightface_inswapper),
+                                                 providers=self.providers,
+                                                 sess_options=session_options)
                     print(f"INSwapper使用providers: {session.get_providers()}")
 
                     self.face_swapper = INSwapper(model_file=str(insightface_inswapper), session=session)
@@ -840,11 +879,113 @@ class FaceSwapper:
                     import torch
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                        logger.info("GPU缓存已清理")
+                        torch.cuda.synchronize()  # 等待所有CUDA操作完成
+                        logger.info("CUDA缓存已清理")
                 except ImportError:
                     pass
 
+            # 清理DirectML缓存
+            if 'DmlExecutionProvider' in self.providers:
+                # DirectML会自动管理内存，但我们可以强制垃圾回收
+                for _ in range(2):
+                    gc.collect()
+                logger.info("DirectML内存已清理")
+
             logger.info("内存缓存已清理")
+
+        except Exception as e:
+            logger.error(f"缓存清理失败: {e}")
+
+    def immediate_gpu_cleanup(self):
+        """立即清理GPU内存（处理完成后调用）"""
+        try:
+            logger.info("开始强力GPU内存清理...")
+
+            # 1. 先清理模型会话
+            self._cleanup_model_sessions()
+
+            # 2. 强制垃圾回收（多次执行）
+            import gc
+            for i in range(5):
+                collected = gc.collect()
+                logger.info(f"垃圾回收第{i+1}次: 清理了{collected}个对象")
+
+            # 3. 清理CUDA缓存
+            if 'CUDAExecutionProvider' in self.providers:
+                try:
+                    import torch
+                    if torch.cuda.is_available():
+                        # 获取清理前的内存状态
+                        memory_before = torch.cuda.memory_allocated() / 1024**2
+                        cached_before = torch.cuda.memory_reserved() / 1024**2
+
+                        # 强制清理CUDA缓存
+                        torch.cuda.empty_cache()
+                        torch.cuda.synchronize()
+                        torch.cuda.ipc_collect()  # 清理进程间通信缓存
+
+                        # 再次清理
+                        torch.cuda.empty_cache()
+
+                        # 获取清理后的内存状态
+                        memory_after = torch.cuda.memory_allocated() / 1024**2
+                        cached_after = torch.cuda.memory_reserved() / 1024**2
+
+                        logger.info(f"CUDA内存清理: {memory_before:.1f}MB -> {memory_after:.1f}MB")
+                        logger.info(f"CUDA缓存清理: {cached_before:.1f}MB -> {cached_after:.1f}MB")
+
+                except ImportError:
+                    logger.warning("PyTorch未安装，无法清理CUDA缓存")
+
+            # 4. 清理ONNX Runtime会话
+            self._cleanup_onnx_sessions()
+
+            # 5. 最后一次垃圾回收
+            for _ in range(3):
+                gc.collect()
+
+            logger.info("强力GPU内存清理完成")
+
+        except Exception as e:
+            logger.error(f"强力GPU内存清理失败: {e}")
+
+    def _cleanup_model_sessions(self):
+        """清理模型会话"""
+        try:
+            # 清理人脸分析器的所有模型会话
+            if hasattr(self, 'face_analyser') and self.face_analyser is not None:
+                if hasattr(self.face_analyser, 'models'):
+                    for task_name, model in self.face_analyser.models.items():
+                        if hasattr(model, 'session') and model.session is not None:
+                            try:
+                                # 显式关闭会话
+                                model.session = None
+                                logger.info(f"已关闭{task_name}模型会话")
+                            except:
+                                pass
+
+            # 清理换脸模型会话
+            if hasattr(self, 'face_swapper') and self.face_swapper is not None:
+                if hasattr(self.face_swapper, 'session') and self.face_swapper.session is not None:
+                    try:
+                        self.face_swapper.session = None
+                        logger.info("已关闭换脸模型会话")
+                    except:
+                        pass
+
+        except Exception as e:
+            logger.error(f"清理模型会话失败: {e}")
+
+    def _cleanup_onnx_sessions(self):
+        """清理ONNX Runtime会话"""
+        try:
+            import onnxruntime as ort
+            # ONNX Runtime没有全局清理方法，但我们可以强制垃圾回收
+            import gc
+            gc.collect()
+            logger.info("ONNX Runtime会话清理完成")
+        except Exception as e:
+            logger.error(f"ONNX Runtime会话清理失败: {e}")
 
         except Exception as e:
             logger.warning(f"缓存清理失败: {e}")
@@ -964,8 +1105,7 @@ class FaceSwapper:
     
     def process_video(self, source_path: Union[str, Path], target_path: Union[str, Path],
                      output_path: Union[str, Path], progress_callback=None, stop_callback=None,
-                     target_face_index=None, reference_face_path=None,
-                     selected_face_indices=None, reference_frame_index=None) -> bool:
+                     target_face_index=None, selected_face_indices=None, reference_frame_index=None) -> bool:
         """
         处理视频的换脸
 
@@ -976,7 +1116,6 @@ class FaceSwapper:
             progress_callback: 进度回调函数
             stop_callback: 停止回调函数
             target_face_index: 目标人脸索引（旧版兼容）
-            reference_face_path: 参考人脸路径
             selected_face_indices: 选中的人脸索引列表（新版多人脸选择）
             reference_frame_index: 参考帧索引（用于多人脸选择）
 
@@ -1082,28 +1221,8 @@ class FaceSwapper:
             frame_count = 0
             reference_face_info = None  # 用于跟踪的参考人脸信息
 
-            # 如果指定了参考人脸路径，从参考图像获取人脸信息
-            if reference_face_path is not None:
-                logger.info(f"使用人脸跟踪模式，参考人脸: {Path(reference_face_path).name}")
-
-                # 读取参考人脸图像
-                reference_image = cv2.imread(str(reference_face_path))
-                if reference_image is not None:
-                    # 检测参考图像中的人脸
-                    reference_faces = self.get_faces_with_info(reference_image)
-                    if reference_faces:
-                        # 使用第一个检测到的人脸作为参考
-                        reference_face_info = reference_faces[0]
-                        logger.info(f"已设置参考人脸: 位置{reference_face_info['center']}, 大小{reference_face_info['area']}")
-                    else:
-                        logger.warning("参考图像中未检测到人脸，将使用自动模式")
-                        reference_face_path = None
-                else:
-                    logger.error(f"无法读取参考人脸图像: {reference_face_path}")
-                    reference_face_path = None
-
             # 如果指定了多个人脸索引（新版多人脸选择）
-            elif selected_face_indices is not None and reference_frame_index is not None:
+            if selected_face_indices is not None and reference_frame_index is not None:
                 logger.info(f"使用新版多人脸选择模式，参考帧: {reference_frame_index}, 人脸索引: {selected_face_indices}")
 
                 # 跳转到参考帧

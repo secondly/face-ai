@@ -295,9 +295,10 @@ class GPUDetector:
                         'gpu_enabled': True,
                         'reason': 'NVIDIA GPU + CUDA + CUDAExecutionProvider 完整支持'
                     }
-                except:
-                    # CUDA提供者有问题，回退到DirectML
-                    pass
+                except Exception as e:
+                    # CUDA提供者有问题，记录错误但继续检查其他选项
+                    logger.warning(f"CUDA提供者测试失败: {e}")
+                    # 继续检查DirectML等其他选项
 
         # DirectML (Windows通用GPU加速) - 检查是否可用
         if (self.system == "Windows" and
@@ -309,14 +310,15 @@ class GPUDetector:
                       detection_result.get('amd_gpu', {}).get('available') or
                       detection_result.get('intel_gpu', {}).get('available'))
 
-            return {
-                'type': 'directml_gpu',
-                'provider': 'DmlExecutionProvider',
-                'description': 'DirectML GPU加速 (已启用)',
-                'performance': 'good',
-                'gpu_enabled': True,
-                'reason': 'DirectML支持多种GPU，当前已配置并可用'
-            }
+            if has_gpu:
+                return {
+                    'type': 'directml_gpu',
+                    'provider': 'DmlExecutionProvider',
+                    'description': 'DirectML GPU加速 (已启用)',
+                    'performance': 'good',
+                    'gpu_enabled': True,
+                    'reason': 'DirectML支持多种GPU，当前已配置并可用'
+                }
         
         # 仅CPU
         else:

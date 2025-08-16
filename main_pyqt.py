@@ -6,11 +6,39 @@ AI换脸应用程序主入口 - PyQt5版本
 
 import sys
 import argparse
+import os
 from pathlib import Path
 
 # 添加项目根目录到路径
 project_root = Path(__file__).parent
 sys.path.insert(0, str(project_root))
+
+def check_cuda_environment():
+    """检查是否在正确的CUDA环境中运行"""
+    # 检查conda环境名称
+    conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
+
+    if conda_env != 'face-ai-cuda11':
+        print("❌ 错误：请在CUDA虚拟环境中启动程序！")
+        print()
+        print("🔧 正确的启动方法：")
+        print("1. conda activate face-ai-cuda11")
+        print("2. python main_pyqt.py")
+        print()
+        print("或者使用启动脚本：")
+        print("双击 '启动AI换脸.bat'")
+        print()
+        print(f"当前环境: {conda_env if conda_env else '未知'}")
+        print("需要环境: face-ai-cuda11")
+        print()
+        print("💡 如果还没有创建环境，请参考 'CUDA虚拟环境使用说明.md'")
+        sys.exit(1)
+
+    print(f"✅ 环境检测通过: {conda_env}")
+    print(f"✅ Python路径: {sys.executable}")
+
+# 在程序启动时检查环境
+check_cuda_environment()
 
 # 全局GPU配置
 GPU_CONFIG = {

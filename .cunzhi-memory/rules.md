@@ -1,3 +1,4 @@
 # 开发规范和规则
 
 - 用户反馈界面问题：1.顶部标题"AI换脸【秘灵】"文字被截断 2.执行日志边距过大导致内容超出容器 3.状态栏文字过大 4.底部系统状态文字仍然太小
+- CUDA版本兼容性规则：CUDA 12.3 + ONNX Runtime 1.17.1 = 不兼容，会导致LoadLibrary failed with error 126。推荐解决方案：使用conda环境隔离，安装CUDA 11.8 + ONNX Runtime兼容版本，或接受CPU模式运行。

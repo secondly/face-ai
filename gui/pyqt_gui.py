@@ -34,14 +34,13 @@ class ProcessWorker(QThread):
     finished = pyqtSignal(bool)  # 是否成功
     preview_updated = pyqtSignal(object, object, str)  # 原图, 结果图, 信息
 
-    def __init__(self, face_swapper, source_path, target_path, output_path, target_face_index=None, reference_face_path=None, selected_face_indices=None, reference_frame_index=None):
+    def __init__(self, face_swapper, source_path, target_path, output_path, target_face_index=None, selected_face_indices=None, reference_frame_index=None):
         super().__init__()
         self.face_swapper = face_swapper
         self.source_path = source_path
         self.target_path = target_path
         self.output_path = output_path
         self.target_face_index = target_face_index  # 目标人脸索引，None表示自动选择（旧版兼容）
-        self.reference_face_path = reference_face_path  # 参考人脸路径，用于跟踪
         self.selected_face_indices = selected_face_indices  # 选中的人脸索引列表（新版多人脸选择）
         self.reference_frame_index = reference_frame_index  # 参考帧索引（新版多人脸选择）
         self.stop_requested = False
@@ -106,7 +105,6 @@ class ProcessWorker(QThread):
                     progress_callback=progress_callback,
                     stop_callback=lambda: self.stop_requested,
                     target_face_index=self.target_face_index,
-                    reference_face_path=self.reference_face_path,
                     selected_face_indices=self.selected_face_indices,
                     reference_frame_index=self.reference_frame_index
                 )
@@ -186,7 +184,6 @@ class ModernFaceSwapGUI(QMainWindow):
         self.source_path = None
         self.target_path = None
         self.output_path = None
-        self.reference_path = None  # 参考人脸路径
         self.is_processing = False
         self.worker = None
 
@@ -274,7 +271,7 @@ class ModernFaceSwapGUI(QMainWindow):
             QPushButton#stopButton:hover {
                 background-color: #c82333;
             }
-            
+
             QLineEdit {
                 padding: 8px;
                 border: 2px solid #ddd;
@@ -520,24 +517,6 @@ class ModernFaceSwapGUI(QMainWindow):
         output_btn.clicked.connect(self._select_output_file)
         layout.addWidget(output_btn, 2, 2)
 
-        # 参考人脸（用于跟踪）
-        self.reference_label = QLabel("参考人脸（跟踪用）:")
-        self.reference_label.setFont(QFont("Arial", 12))
-        layout.addWidget(self.reference_label, 3, 0)
-
-        self.reference_entry = QLineEdit()
-        self.reference_entry.setPlaceholderText("选择要跟踪的参考人脸图像...")
-        layout.addWidget(self.reference_entry, 3, 1)
-
-        self.reference_btn = QPushButton("浏览")
-        self.reference_btn.clicked.connect(self._select_reference_file)
-        layout.addWidget(self.reference_btn, 3, 2)
-
-        # 初始时隐藏参考人脸选择
-        self.reference_label.setVisible(False)
-        self.reference_entry.setVisible(False)
-        self.reference_btn.setVisible(False)
-
         # 设置列宽比例
         layout.setColumnStretch(1, 1)
 
@@ -621,13 +600,6 @@ class ModernFaceSwapGUI(QMainWindow):
         self.multi_face_checkbox = QCheckBox("🎯 多人脸选择")
         self.multi_face_checkbox.setChecked(False)
         second_row.addWidget(self.multi_face_checkbox)
-
-        # 人脸跟踪选项
-        self.face_tracking_checkbox = QCheckBox("🔍 人脸跟踪")
-        self.face_tracking_checkbox.setChecked(False)
-        self.face_tracking_checkbox.setToolTip("⚠️ 重要：参考人脸必须是视频中的同一个人\n匹配度说明：70-100%=同一人，40-69%=相似，<40%=不同人")
-        self.face_tracking_checkbox.toggled.connect(self._on_face_tracking_toggled)
-        second_row.addWidget(self.face_tracking_checkbox)
 
         # 性能优化按钮 - 添加详细说明
         perf_btn = QPushButton("⚡ 性能优化")
@@ -1473,41 +1445,6 @@ class ModernFaceSwapGUI(QMainWindow):
             self._update_status(f"输出路径: {Path(file_path).name}")
             self._check_ready_to_start()
 
-    def _select_reference_file(self):
-        """选择参考人脸文件"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择参考人脸图像",
-            "",
-            "图像文件 (*.jpg *.jpeg *.png *.bmp *.tiff);;所有文件 (*.*)"
-        )
-
-        if file_path:
-            self.reference_path = file_path
-            self.reference_entry.setText(file_path)
-            self._update_status(f"已选择参考人脸: {Path(file_path).name}")
-            self._log_message(f"已选择参考人脸图像: {Path(file_path).name}")
-            self._check_ready_to_start()
-
-    def _on_face_tracking_toggled(self, checked):
-        """人脸跟踪选项切换"""
-        # 显示或隐藏参考人脸选择
-        self.reference_label.setVisible(checked)
-        self.reference_entry.setVisible(checked)
-        self.reference_btn.setVisible(checked)
-
-        if checked:
-            self._log_message("启用人脸跟踪模式，请选择参考人脸图像")
-            self._log_message("⚠️ 重要提示：参考人脸必须是视频中的同一个人，否则匹配度会很低", "WARNING")
-            # 禁用多人脸选择（两种模式互斥）
-            self.multi_face_checkbox.setChecked(False)
-        else:
-            self.reference_path = None
-            self.reference_entry.clear()
-            self._log_message("禁用人脸跟踪模式")
-
-        self._check_ready_to_start()
-
     def _auto_set_output_path(self, target_path):
         """自动设置输出路径"""
         target_file = Path(target_path)
@@ -1538,13 +1475,8 @@ class ModernFaceSwapGUI(QMainWindow):
             has_output = bool(self.output_path) if self.output_path else False
             has_swapper = self.face_swapper is not None
 
-            # 检查人脸跟踪模式的额外条件
-            has_reference = True  # 默认不需要参考人脸
-            if self.face_tracking_checkbox.isChecked():
-                has_reference = bool(self.reference_path) and Path(str(self.reference_path)).exists() if self.reference_path else False
-
             # 确保ready是布尔值
-            ready = bool(has_source and has_target and has_output and has_swapper and has_reference)
+            ready = bool(has_source and has_target and has_output and has_swapper)
 
             # 安全更新按钮状态
             if hasattr(self, 'start_button') and self.start_button is not None:
@@ -1562,8 +1494,6 @@ class ModernFaceSwapGUI(QMainWindow):
                     self._update_status("请选择目标文件")
                 elif not has_output:
                     self._update_status("请设置输出路径")
-                elif not has_reference:
-                    self._update_status("请选择参考人脸图像")
 
         except Exception as e:
             print(f"_check_ready_to_start error: {e}")
@@ -1693,19 +1623,9 @@ class ModernFaceSwapGUI(QMainWindow):
             return
 
         target_face_index = None
-        reference_face_path = None
-
-        # 检查是否启用人脸跟踪模式
-        if self.face_tracking_checkbox.isChecked():
-            if self.reference_path:
-                reference_face_path = self.reference_path
-                self._log_message(f"使用人脸跟踪模式，参考人脸: {Path(reference_face_path).name}")
-            else:
-                QMessageBox.warning(self, "提示", "请先选择参考人脸图像")
-                return
 
         # 检查是否启用多人脸选择
-        elif self.multi_face_checkbox.isChecked():
+        if self.multi_face_checkbox.isChecked():
             target_ext = Path(self.target_path).suffix.lower()
 
             if target_ext in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']:
@@ -1772,7 +1692,6 @@ class ModernFaceSwapGUI(QMainWindow):
             self.target_path,
             self.output_path,
             target_face_index,
-            reference_face_path,
             selected_face_indices,
             reference_frame_index
         )
@@ -1852,20 +1771,22 @@ class ModernFaceSwapGUI(QMainWindow):
     def _cleanup_gpu_memory(self):
         """清理GPU内存（完整版，仅在处理完成时使用）"""
         try:
-            # 如果有worker线程，清理其GPU内存
+            # 如果有worker线程，立即清理其GPU内存
             if hasattr(self, 'worker') and self.worker is not None:
                 if hasattr(self.worker, 'face_swapper') and self.worker.face_swapper is not None:
-                    self.worker.face_swapper.cleanup_gpu_memory()
+                    # 使用立即清理方法
+                    self.worker.face_swapper.immediate_gpu_cleanup()
 
-            # 如果主线程有face_swapper，也清理其GPU内存
+            # 如果主线程有face_swapper，也立即清理其GPU内存
             if hasattr(self, 'face_swapper') and self.face_swapper is not None:
-                self.face_swapper.cleanup_gpu_memory()
+                self.face_swapper.immediate_gpu_cleanup()
 
             # 强制垃圾回收
             import gc
-            gc.collect()
+            for _ in range(3):
+                gc.collect()
 
-            self._log_message("GPU内存已清理", "INFO")
+            self._log_message("GPU内存已彻底清理", "INFO")
 
         except Exception as e:
             self._log_message(f"GPU内存清理失败: {e}", "WARNING")

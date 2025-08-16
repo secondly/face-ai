@@ -22,17 +22,17 @@ def fix_onnx_runtime():
     """修复ONNX Runtime版本"""
     print("开始修复ONNX Runtime版本...")
     print("=" * 50)
-    
-    # 检查是否在虚拟环境中
-    venv_dir = Path(__file__).parent.parent / "venv"
-    if venv_dir.exists():
-        python_exe = venv_dir / "Scripts" / "python.exe"
-        pip_exe = venv_dir / "Scripts" / "pip.exe"
-        print(f"使用虚拟环境: {venv_dir}")
-    else:
+
+    # 检查当前conda环境
+    conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
+    if conda_env == 'face-ai-cuda11':
+        print(f"使用conda环境: {conda_env}")
         python_exe = sys.executable
         pip_exe = "pip"
-        print("使用系统Python环境")
+    else:
+        print(f"错误：当前环境是 {conda_env}，需要在 face-ai-cuda11 环境中运行")
+        print("请先运行: conda activate face-ai-cuda11")
+        return False
     
     # 步骤1: 卸载现有版本
     print("\n步骤1: 卸载现有ONNX Runtime版本")
@@ -48,11 +48,14 @@ def fix_onnx_runtime():
     
     # 步骤2: 安装兼容版本
     print("\n步骤2: 安装兼容版本")
-    target_version = "1.16.3"
+    target_version = "1.15.1"
     print(f"安装 onnxruntime-gpu=={target_version}...")
-    
+
     success, stdout, stderr = run_command([
-        str(pip_exe), 'install', f'onnxruntime-gpu=={target_version}'
+        str(pip_exe), 'install', f'onnxruntime-gpu=={target_version}',
+        '--trusted-host', 'pypi.org',
+        '--trusted-host', 'pypi.python.org',
+        '--trusted-host', 'files.pythonhosted.org'
     ])
     
     if success:

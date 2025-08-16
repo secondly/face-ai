@@ -65,10 +65,38 @@ class StartupCheckerDialog(QDialog):
         super().__init__(parent)
         self.check_result = None
         self.worker = None
-        
+
+        # 检查CUDA环境
+        self._check_cuda_environment()
+
         self.setWindowTitle("🔍 AI换脸工具 - 配置检测")
         self.setFixedSize(900, 700)
         self.setModal(True)
+
+    def _check_cuda_environment(self):
+        """检查CUDA环境并显示提示"""
+        import os
+        conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
+
+        if conda_env != 'face-ai-cuda11':
+            from PyQt5.QtWidgets import QMessageBox
+            msg = QMessageBox(self)
+            msg.setIcon(QMessageBox.Warning)
+            msg.setWindowTitle("⚠️ 环境警告")
+            msg.setText("检测到您不在推荐的CUDA环境中运行！")
+            msg.setInformativeText(
+                f"当前环境: {conda_env if conda_env else '未知'}\n"
+                f"推荐环境: face-ai-cuda11\n\n"
+                f"为了获得最佳GPU加速性能，建议：\n"
+                f"1. conda activate face-ai-cuda11\n"
+                f"2. python main_pyqt.py\n\n"
+                f"继续使用当前环境可能导致GPU加速不可用。"
+            )
+            msg.setStandardButtons(QMessageBox.Ok | QMessageBox.Cancel)
+            msg.setDefaultButton(QMessageBox.Cancel)
+
+            if msg.exec_() == QMessageBox.Cancel:
+                sys.exit(0)
         
         # 设置样式
         self.setStyleSheet("""
@@ -364,18 +392,31 @@ class StartupCheckerDialog(QDialog):
         issues = []
 
         try:
-            # CUDA版本兼容性检查
+            # CUDA环境兼容性检查
             try:
-                import subprocess
-                result_cuda = subprocess.run(['nvcc', '--version'], capture_output=True, text=True, timeout=5)
-                if result_cuda.returncode == 0 and 'release 12' in result_cuda.stdout:
-                    issues.append("🚨 CUDA版本兼容性问题")
-                    issues.append("   问题: CUDA 12.3与ONNX Runtime 1.17.1不兼容")
-                    issues.append("   原因: 这是导致GPU无法工作的根本原因")
-                    issues.append("   表现: LoadLibrary failed with error 126")
-                    issues.append("   影响: GPU加速已自动降级到CPU模式")
-                    issues.append("   解决方案: 降级CUDA到11.8版本")
-                    issues.append("")
+                # 检查当前conda环境
+                conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
+                if conda_env != 'face-ai-cuda11':
+                    # 不在推荐环境中，检查系统级CUDA
+                    import subprocess
+                    result_cuda = subprocess.run(['nvcc', '--version'], capture_output=True, text=True, timeout=5)
+                    if result_cuda.returncode == 0 and 'release 12' in result_cuda.stdout:
+                        issues.append("🚨 CUDA版本兼容性问题")
+                        issues.append("   问题: CUDA 12.3与ONNX Runtime 1.17.1不兼容")
+                        issues.append("   原因: 这是导致GPU无法工作的根本原因")
+                        issues.append("   表现: LoadLibrary failed with error 126")
+                        issues.append("   影响: GPU加速已自动降级到CPU模式")
+                        issues.append("   解决方案: 使用face-ai-cuda11环境")
+                        issues.append("")
+                else:
+                    # 在推荐环境中，检查GPU是否正常工作
+                    gpu_config = result.get('gpu_config', {})
+                    if not gpu_config.get('gpu_available', False):
+                        issues.append("⚠️ GPU配置问题")
+                        issues.append("   问题: 在CUDA 11.8环境中但GPU加速不可用")
+                        issues.append("   可能原因: 模型加载失败或显存不足")
+                        issues.append("   解决方案: 检查显存使用情况或重启程序")
+                        issues.append("")
             except:
                 pass
 
@@ -513,20 +554,38 @@ class StartupCheckerDialog(QDialog):
             # 🚨 重要：CUDA版本兼容性检查
             compatibility_info.append("\n🚨 关键兼容性检查:")
 
-            # CUDA版本单独检查
+            # CUDA环境兼容性检查
             try:
-                import subprocess
-                result_cuda = subprocess.run(['nvcc', '--version'], capture_output=True, text=True, timeout=5)
-                if result_cuda.returncode == 0 and 'release 12' in result_cuda.stdout:
-                    compatibility_info.append("🚨 CUDA 12.x版本与ONNX Runtime 1.17.x不兼容！")
-                    compatibility_info.append("❌ 这是GPU无法工作的根本原因")
-                    compatibility_info.append("💡 解决方案: 降级到CUDA 11.8")
-                    issues.append("CUDA版本不兼容")
-                    cuda_onnx_compatible = False
-                elif result_cuda.returncode == 0 and 'release 11.8' in result_cuda.stdout:
-                    compatibility_info.append("✅ CUDA 11.8版本兼容")
+                # 检查当前conda环境
+                conda_env = os.environ.get('CONDA_DEFAULT_ENV', '')
+                if conda_env == 'face-ai-cuda11':
+                    compatibility_info.append("✅ 运行在CUDA 11.8兼容环境中")
+                    compatibility_info.append("🎯 这是推荐的配置环境")
+
+                    # 检查ONNX Runtime版本
+                    try:
+                        import onnxruntime as ort
+                        onnx_version = ort.__version__
+                        if onnx_version.startswith('1.15'):
+                            compatibility_info.append("✅ ONNX Runtime 1.15.x与CUDA 11.8完全兼容")
+                        else:
+                            compatibility_info.append(f"⚠️ ONNX Runtime {onnx_version}，建议使用1.15.x")
+                    except:
+                        pass
                 else:
-                    compatibility_info.append("⚠️ CUDA版本检测失败或未知版本")
+                    # 检查系统级CUDA（如果不在推荐环境中）
+                    import subprocess
+                    result_cuda = subprocess.run(['nvcc', '--version'], capture_output=True, text=True, timeout=5)
+                    if result_cuda.returncode == 0 and 'release 12' in result_cuda.stdout:
+                        compatibility_info.append("🚨 CUDA 12.x版本与ONNX Runtime 1.17.x不兼容！")
+                        compatibility_info.append("❌ 这是GPU无法工作的根本原因")
+                        compatibility_info.append("💡 解决方案: 使用face-ai-cuda11环境")
+                        issues.append("CUDA版本不兼容")
+                        cuda_onnx_compatible = False
+                    elif result_cuda.returncode == 0 and 'release 11.8' in result_cuda.stdout:
+                        compatibility_info.append("✅ CUDA 11.8版本兼容")
+                    else:
+                        compatibility_info.append("⚠️ CUDA版本检测失败或未知版本")
             except:
                 compatibility_info.append("⚠️ CUDA版本检测失败")
 
@@ -1016,7 +1075,7 @@ class StartupCheckerDialog(QDialog):
                 import subprocess
                 import sys
 
-                script_path = project_root / "scripts" / "fix_gpu_issues.py"
+                script_path = project_root / "scripts" / "fix_gpu_simple.py"
                 result = subprocess.run([sys.executable, str(script_path)],
                                       capture_output=True, text=True, timeout=600)
 
