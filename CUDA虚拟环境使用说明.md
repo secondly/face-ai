@@ -16,15 +16,28 @@ cd G:\tok\face-ai
 # 确认当前位置（应该看到main_pyqt.py和requirements.txt等文件）
 dir
 ```
+### 第二步：安装conda
+```bash
+官网：https://docs.conda.io/en/latest/miniconda.html
+点击右边的绿色按钮 "Download 下载"
+选择对应版本：
+Windows: Miniconda3-latest-Windows-x86_64.exe
+选择Python 3.10或3.11版本
+安装时注意：
+✅ 勾选 "Add Miniconda3 to my PATH environment variable"
+✅ 勾选 "Register Miniconda3 as my default Python"
 
-### 第二步：创建项目内 CUDA 环境
+```
+
+
+### 第三步：创建项目内 CUDA 环境
 
 ```bash
 # 重要：使用--prefix在项目内创建环境
 conda create --prefix ./cuda_env python=3.8 -y
 ```
 
-### 第三步：激活环境并安装 CUDA 工具包
+### 第四步：激活环境并安装 CUDA 工具包
 
 ```bash
 # 激活项目内的环境
@@ -34,7 +47,7 @@ conda activate ./cuda_env
 conda install cudatoolkit=11.8 cudnn=8.2 -c conda-forge -y
 ```
 
-### 第四步：一键安装所有 AI 依赖
+### 第五步：一键安装所有 AI 依赖
 
 ```bash
 # 使用requirements.txt一键安装所有依赖
@@ -44,7 +57,7 @@ pip install -r requirements.txt --trusted-host pypi.org --trusted-host pypi.pyth
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 ```
 
-### 第五步：验证安装
+### 第六步：验证安装
 
 ```bash
 # 检查CUDA是否可用

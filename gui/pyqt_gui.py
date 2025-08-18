@@ -16,7 +16,8 @@ from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QLineEdit, QTextEdit, QProgressBar,
     QFileDialog, QMessageBox, QCheckBox, QFrame, QSplitter,
-    QGroupBox, QGridLayout, QSpacerItem, QSizePolicy, QDialog
+    QGroupBox, QGridLayout, QSpacerItem, QSizePolicy, QDialog,
+    QComboBox
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QIcon, QPalette, QColor, QPixmap
@@ -33,8 +34,10 @@ class ProcessWorker(QThread):
     log_message = pyqtSignal(str, str)  # 消息, 级别
     finished = pyqtSignal(bool)  # 是否成功
     preview_updated = pyqtSignal(object, object, str)  # 原图, 结果图, 信息
+    model_fallback_occurred = pyqtSignal(dict)  # 新增：模型回退信号
 
-    def __init__(self, face_swapper, source_path, target_path, output_path, target_face_index=None, selected_face_indices=None, reference_frame_index=None):
+    def __init__(self, face_swapper, source_path, target_path, output_path, target_face_index=None, selected_face_indices=None, reference_frame_index=None,
+                 background_enabled=False, background_mode="backgroundmattingv2", background_path=None, background_folder_path=None):
         super().__init__()
         self.face_swapper = face_swapper
         self.source_path = source_path
@@ -44,10 +47,343 @@ class ProcessWorker(QThread):
         self.selected_face_indices = selected_face_indices  # 选中的人脸索引列表（新版多人脸选择）
         self.reference_frame_index = reference_frame_index  # 参考帧索引（新版多人脸选择）
         self.stop_requested = False
+
+        # 背景替换相关参数
+        self.background_enabled = background_enabled
+        self.background_mode = background_mode
+        self.background_path = background_path
+        self.background_folder_path = background_folder_path
+        self.background_replacer = None
+
+        # 初始化背景替换器（延迟初始化，避免阻塞主线程）
+        if self.background_enabled:
+            try:
+                from core.background_replacer import BackgroundReplacer
+                # 使用延迟初始化，避免在主线程中下载模型
+                self.background_replacer = BackgroundReplacer(mode=background_mode, lazy_init=True)
+                self.log_message.emit(f"背景替换器创建成功，模式: {background_mode}", "INFO")
+                self.log_message.emit("将在处理时初始化背景替换模型...", "INFO")
+            except Exception as e:
+                self.log_message.emit(f"背景替换模块加载失败: {e}", "ERROR")
+                self.background_enabled = False
     
+    def _get_mode_display_name(self, mode):
+        """获取模式的显示名称"""
+        mode_map = {
+            'backgroundmattingv2': "BackgroundMattingV2 (推荐)",
+            'modnet': "MODNet (快速)",
+            'u2net': "U2Net (通用)",
+            'rembg': "Rembg (简单)"
+        }
+        return mode_map.get(mode.lower(), mode)
+
     def stop(self):
         """停止处理"""
         self.stop_requested = True
+
+    def _apply_background_replacement(self, image):
+        """应用背景替换"""
+        try:
+            if not self.background_replacer:
+                return image
+
+            # 检查模型是否已初始化
+            if not self.background_replacer.is_available():
+                if self.background_replacer.is_initializing_model():
+                    self.log_message.emit("背景替换模型正在初始化中，跳过此帧", "INFO")
+                    return image
+
+                # 初始化模型
+                self.log_message.emit("正在初始化背景替换模型，请稍候...", "INFO")
+
+                def progress_callback(current, total, message):
+                    self.log_message.emit(f"模型初始化: {message} ({current}/{total})", "INFO")
+
+                # 在当前线程中初始化（因为已经在worker线程中）
+                self.background_replacer.initialize_async(progress_callback)
+
+                # 检查初始化结果
+                if not self.background_replacer.is_available():
+                    error = self.background_replacer.get_initialization_error()
+                    self.log_message.emit(f"背景替换模型初始化失败: {error}", "ERROR")
+                    return image
+                else:
+                    # 检查是否发生了回退
+                    status = self.background_replacer.get_model_status()
+                    if status['fallback_occurred']:
+                        original_display = self._get_mode_display_name(status['original_mode'])
+                        current_display = self._get_mode_display_name(status['current_mode'])
+                        self.log_message.emit(f"背景替换模型初始化成功，但从 {original_display} 回退到 {current_display} 模式", "WARNING")
+                        if status.get('fallback_reason'):
+                            self.log_message.emit(f"回退原因: {status['fallback_reason']}", "WARNING")
+                        # 发送回退状态信号
+                        self.model_fallback_occurred.emit(status)
+                    else:
+                        current_display = self._get_mode_display_name(status['current_mode'])
+                        self.log_message.emit(f"背景替换模型初始化成功: {current_display}", "SUCCESS")
+
+            # 获取背景图片
+            background_image = self._get_background_image()
+            if background_image is None:
+                self.log_message.emit("无法获取背景图片，跳过背景替换", "WARNING")
+                return image
+
+            # 执行背景替换
+            self.log_message.emit("正在进行背景替换...", "INFO")
+            result = self.background_replacer.replace_background(image, background_image)
+
+            if result is not None:
+                self.log_message.emit("背景替换成功", "SUCCESS")
+                return result
+            else:
+                self.log_message.emit("背景替换失败，使用原图", "WARNING")
+                return image
+
+        except Exception as e:
+            self.log_message.emit(f"背景替换过程中出错: {e}", "ERROR")
+            return image
+
+    def _process_video_with_background(self):
+        """处理视频（包含背景替换）"""
+        import cv2
+        from pathlib import Path
+
+        try:
+            self.log_message.emit("开始处理视频（包含背景替换）...", "INFO")
+
+            # 确保背景替换器已初始化
+            if not self.background_replacer.is_available():
+                if self.background_replacer.is_initializing_model():
+                    self.log_message.emit("背景替换模型正在初始化中，请稍候...", "INFO")
+                    return False
+
+                # 初始化模型
+                self.log_message.emit("正在初始化背景替换模型...", "INFO")
+                def progress_callback(current, total, message):
+                    self.log_message.emit(f"模型初始化: {message} ({current}/{total})", "INFO")
+
+                self.background_replacer.initialize_async(progress_callback)
+
+                if not self.background_replacer.is_available():
+                    error = self.background_replacer.get_initialization_error()
+                    self.log_message.emit(f"背景替换模型初始化失败: {error}", "ERROR")
+                    return False
+
+            # 读取源人脸
+            source_image = cv2.imread(str(self.source_path))
+            if source_image is None:
+                self.log_message.emit(f"无法读取源图像: {self.source_path}", "ERROR")
+                return False
+
+            # 检测源人脸
+            self.log_message.emit("检测源图像中的人脸...", "INFO")
+            source_faces = self.face_swapper.get_faces(source_image)
+            if not source_faces:
+                self.log_message.emit("源图像中未检测到人脸", "ERROR")
+                return False
+
+            source_face = source_faces[0]
+            self.log_message.emit(f"源图像中检测到 {len(source_faces)} 个人脸，使用第一个", "INFO")
+
+            # 打开视频
+            cap = cv2.VideoCapture(str(self.target_path))
+            if not cap.isOpened():
+                self.log_message.emit(f"无法打开视频: {self.target_path}", "ERROR")
+                return False
+
+            # 获取视频属性
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+            self.log_message.emit(f"视频属性信息: {width}x{height}, {fps}fps, {total_frames}帧", "INFO")
+
+            # 确保输出目录存在
+            output_file = Path(self.output_path)
+            output_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # 创建视频写入器
+            if not str(self.output_path).endswith('.mp4'):
+                self.output_path = str(self.output_path).rsplit('.', 1)[0] + '.mp4'
+
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            out = cv2.VideoWriter(str(self.output_path), fourcc, fps, (width, height))
+
+            if not out.isOpened():
+                self.log_message.emit("无法创建视频写入器", "ERROR")
+                cap.release()
+                return False
+
+            self.log_message.emit("视频写入器创建成功", "INFO")
+
+            frame_count = 0
+
+            while True:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+
+                # 检查停止请求
+                if self.stop_requested:
+                    self.log_message.emit("收到停止请求，中断视频处理", "INFO")
+                    break
+
+                # 执行换脸
+                result_frame = frame.copy()
+                try:
+                    target_faces = self.face_swapper.get_faces(frame)
+                    if target_faces:
+                        target_face = target_faces[0]  # 使用第一个检测到的人脸
+                        swapped_frame = self.face_swapper.swap_face(source_image, frame, source_face, target_face)
+                        if swapped_frame is not None:
+                            result_frame = swapped_frame
+                except Exception as e:
+                    self.log_message.emit(f"帧 {frame_count}: 换脸失败: {e}", "WARNING")
+
+                # 应用背景替换
+                final_frame = self._apply_background_replacement(result_frame)
+                if final_frame is None:
+                    final_frame = result_frame  # 背景替换失败时使用换脸结果
+
+                # 写入最终帧
+                out.write(final_frame)
+
+                frame_count += 1
+
+                # 计算进度
+                progress = (frame_count / total_frames) * 100 if total_frames > 0 else 0
+
+                # 每帧都发送进度更新（与原始逻辑保持一致）
+                progress_text = f"处理视频(含背景替换): {frame_count}/{total_frames} 帧"
+                self.progress_updated.emit(progress_text, int(progress))
+
+                # 每帧都发送预览更新
+                frame_info = f"帧 {frame_count}/{total_frames}"
+                self.preview_updated.emit(frame, final_frame, frame_info)
+
+                # 进度日志（与原始逻辑保持一致）
+                if frame_count % 20 == 0 or progress in [5, 10, 25, 50, 75, 90, 100]:
+                    log_msg = f"处理完成 {frame_count}/{total_frames} 帧 (含背景替换) - 已完成 {progress:.1f}%"
+                    self.log_message.emit(log_msg, "INFO")
+
+            # 释放资源
+            cap.release()
+            out.release()
+
+            # 等待文件写入完成
+            import time
+            time.sleep(2.0)
+
+            # 验证输出文件
+            output_file = Path(self.output_path)
+            if output_file.exists() and output_file.stat().st_size > 0:
+                file_size_mb = output_file.stat().st_size / (1024 * 1024)
+                self.log_message.emit(f"视频处理完成: {self.output_path}", "SUCCESS")
+                self.log_message.emit(f"输出文件大小: {file_size_mb:.1f} MB", "INFO")
+                self.log_message.emit(f"处理了 {frame_count} 帧（包含背景替换）", "INFO")
+
+                # 保留音轨
+                self.face_swapper._preserve_audio(self.target_path, self.output_path)
+
+                return True
+            else:
+                self.log_message.emit("输出文件未生成或为空", "ERROR")
+                return False
+
+        except Exception as e:
+            self.log_message.emit(f"视频处理失败: {e}", "ERROR")
+            return False
+
+    def _get_background_image(self):
+        """获取背景图片"""
+        try:
+            if self.background_path:
+                # 使用指定的背景图片
+                background = cv2.imread(str(self.background_path))
+                if background is not None:
+                    return background
+                else:
+                    self.log_message.emit(f"无法读取背景图片: {self.background_path}", "ERROR")
+
+            elif self.background_folder_path:
+                # 从文件夹中随机选择背景图片
+                background_file = self._get_random_background_from_folder()
+                if background_file:
+                    background = cv2.imread(background_file)
+                    if background is not None:
+                        self.log_message.emit(f"使用随机背景: {Path(background_file).name}", "INFO")
+                        return background
+                    else:
+                        self.log_message.emit(f"无法读取随机背景图片: {background_file}", "ERROR")
+                else:
+                    self.log_message.emit("背景文件夹中没有可用的图片", "ERROR")
+
+            return None
+
+        except Exception as e:
+            self.log_message.emit(f"获取背景图片失败: {e}", "ERROR")
+            return None
+
+    def _get_random_background_from_folder(self):
+        """从背景文件夹中随机选择一张图片"""
+        try:
+            if not self.background_folder_path:
+                return None
+
+            image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+            image_files = []
+
+            for file_path in Path(self.background_folder_path).iterdir():
+                if file_path.is_file() and file_path.suffix.lower() in image_extensions:
+                    image_files.append(str(file_path))
+
+            if image_files:
+                import random
+                return random.choice(image_files)
+            return None
+
+        except Exception as e:
+            self.log_message.emit(f"从背景文件夹选择图片失败: {e}", "ERROR")
+            return None
+
+    def _process_image_with_background(self):
+        """处理图像（包含背景替换）"""
+        try:
+            # 读取图像
+            source_image = cv2.imread(str(self.source_path))
+            target_image = cv2.imread(str(self.target_path))
+
+            if source_image is None:
+                self.log_message.emit(f"无法读取源图像: {self.source_path}", "ERROR")
+                return False
+
+            if target_image is None:
+                self.log_message.emit(f"无法读取目标图像: {self.target_path}", "ERROR")
+                return False
+
+            # 执行换脸
+            self.log_message.emit("开始执行换脸...", "INFO")
+            result_image = self.face_swapper.swap_face(source_image, target_image)
+
+            if result_image is None:
+                self.log_message.emit("换脸失败", "ERROR")
+                return False
+
+            # 应用背景替换
+            result_image = self._apply_background_replacement(result_image)
+
+            # 保存结果
+            success = cv2.imwrite(str(self.output_path), result_image)
+            if not success:
+                self.log_message.emit(f"保存图像失败: {self.output_path}", "ERROR")
+                return False
+
+            return True
+
+        except Exception as e:
+            self.log_message.emit(f"处理图像失败: {e}", "ERROR")
+            return False
     
     def run(self):
         """运行处理"""
@@ -91,23 +427,38 @@ class ProcessWorker(QThread):
 
                     # 发送预览更新
                     if original_frame is not None or result_frame is not None:
+                        # 如果启用了背景替换，对预览的result_frame也应用背景替换
+                        preview_result_frame = result_frame
+                        if result_frame is not None and self.background_enabled and self.background_replacer:
+                            try:
+                                preview_result_frame = self._apply_background_replacement(result_frame)
+                                if preview_result_frame is None:
+                                    preview_result_frame = result_frame  # 背景替换失败时使用原图
+                            except Exception as e:
+                                self.log_message.emit(f"预览背景替换失败: {e}", "WARNING")
+                                preview_result_frame = result_frame
+
                         frame_info = f"帧 {current_frame}/{total_frames}"
                         if extra_msg:
                             frame_info += f" - {extra_msg}"
-                        self.preview_updated.emit(original_frame, result_frame, frame_info)
+                        self.preview_updated.emit(original_frame, preview_result_frame, frame_info)
 
                     return True
 
-                success = self.face_swapper.process_video(
-                    self.source_path,
-                    self.target_path,
-                    self.output_path,
-                    progress_callback=progress_callback,
-                    stop_callback=lambda: self.stop_requested,
-                    target_face_index=self.target_face_index,
-                    selected_face_indices=self.selected_face_indices,
-                    reference_frame_index=self.reference_frame_index
-                )
+                # 如果启用了背景替换，需要使用自定义的视频处理流程
+                if self.background_enabled and self.background_replacer:
+                    success = self._process_video_with_background()
+                else:
+                    success = self.face_swapper.process_video(
+                        self.source_path,
+                        self.target_path,
+                        self.output_path,
+                        progress_callback=progress_callback,
+                        stop_callback=lambda: self.stop_requested,
+                        target_face_index=self.target_face_index,
+                        selected_face_indices=self.selected_face_indices,
+                        reference_frame_index=self.reference_frame_index
+                    )
             else:
                 # 处理图像
                 self.log_message.emit("开始处理图像文件...", "INFO")
@@ -132,6 +483,10 @@ class ProcessWorker(QThread):
                         )
 
                         if result_image is not None:
+                            # 如果启用了背景替换，进行背景替换
+                            if self.background_enabled and self.background_replacer:
+                                result_image = self._apply_background_replacement(result_image)
+
                             # 保存结果
                             success = cv2.imwrite(str(self.output_path), result_image)
                             if success:
@@ -143,11 +498,17 @@ class ProcessWorker(QThread):
                             self.log_message.emit("选择性换脸失败", "ERROR")
                 else:
                     # 普通换脸
-                    success = self.face_swapper.process_image(
-                        self.source_path,
-                        self.target_path,
-                        self.output_path
-                    )
+                    if self.background_enabled and self.background_replacer:
+                        # 使用自定义处理流程（包含背景替换）
+                        success = self._process_image_with_background()
+                    else:
+                        # 使用原始处理流程
+                        success = self.face_swapper.process_image(
+                            self.source_path,
+                            self.target_path,
+                            self.output_path
+                        )
+
                     if success:
                         self.log_message.emit("图像处理成功", "SUCCESS")
                     else:
@@ -186,6 +547,10 @@ class ModernFaceSwapGUI(QMainWindow):
         self.output_path = None
         self.is_processing = False
         self.worker = None
+
+        # 背景替换相关变量
+        self.background_path = None
+        self.background_folder_path = None
 
         # GPU配置
         self.gpu_config = gpu_config or {
@@ -321,10 +686,19 @@ class ModernFaceSwapGUI(QMainWindow):
             }
             
             QCheckBox::indicator:checked {
-                border: 2px solid #007acc;
+                border: 2px solid #4CAF50;
                 border-radius: 3px;
-                background-color: #007acc;
+                background-color: #4CAF50;
                 image: url(data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTIiIGhlaWdodD0iOSIgdmlld0JveD0iMCAwIDEyIDkiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxwYXRoIGQ9Ik0xIDQuNUw0LjUgOEwxMSAxIiBzdHJva2U9IndoaXRlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCIgc3Ryb2tlLWxpbmVqb2luPSJyb3VuZCIvPgo8L3N2Zz4K);
+            }
+
+            QCheckBox::indicator:hover {
+                border-color: #4CAF50;
+            }
+
+            QCheckBox::indicator:checked:hover {
+                background-color: #45a049;
+                border-color: #45a049;
             }
         """)
     
@@ -348,17 +722,17 @@ class ModernFaceSwapGUI(QMainWindow):
         main_layout.setSpacing(20)
         main_layout.setContentsMargins(20, 20, 0, 20)
 
-        # 标题 - 确保文字完全显示
+        # 标题 - 设置固定高度，不参与自适应
         title_label = QLabel("🎭 AI换脸【秘灵】")
         title_label.setAlignment(Qt.AlignCenter)
         title_label.setFont(QFont("Microsoft YaHei", 16, QFont.Bold))  # 使用中文字体，减小字号
         title_label.setStyleSheet("color: #333333; margin: 0px; padding: 0px;")
-        title_label.setMinimumHeight(25)  # 减小最小高度
+        title_label.setFixedHeight(40)  # 设置固定高度，不参与自适应
         main_layout.addWidget(title_label)
 
         # 创建主水平分割器：左侧所有功能 | 右侧预览
         main_splitter = QSplitter(Qt.Horizontal)
-        main_layout.addWidget(main_splitter)
+        main_layout.addWidget(main_splitter, 1)  # 拉伸因子为1，占用剩余空间
 
         # 左侧：所有功能区域的垂直布局
         left_panel = QWidget()
@@ -366,15 +740,15 @@ class ModernFaceSwapGUI(QMainWindow):
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(15)
 
-        # 文件选择区域
+        # 文件选择区域 - 固定高度
         self._create_file_section(left_layout)
 
-        # 控制面板
+        # 控制面板 - 固定高度
         self._create_control_section(left_layout)
 
-        # 日志和状态区域
+        # 日志和状态区域 - 自适应高度，占用剩余空间
         log_panel = self._create_log_status_panel()
-        left_layout.addWidget(log_panel)
+        left_layout.addWidget(log_panel, 1)  # 拉伸因子为1，占用剩余空间
 
         main_splitter.addWidget(left_panel)
 
@@ -390,7 +764,7 @@ class ModernFaceSwapGUI(QMainWindow):
 
     def _create_status_bar(self, parent_layout):
         """创建底部状态栏"""
-        # 状态栏容器 - 缩小高度
+        # 状态栏容器 - 增加高度以容纳进度条
         status_frame = QFrame()
         status_frame.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
         status_frame.setStyleSheet("""
@@ -401,32 +775,120 @@ class ModernFaceSwapGUI(QMainWindow):
                 padding: 2px;
             }
         """)
-        status_frame.setMaximumHeight(45)  # 增加状态栏高度以容纳文字
+        status_frame.setFixedHeight(60)  # 设置固定高度，不参与自适应
 
         status_layout = QHBoxLayout(status_frame)
         status_layout.setContentsMargins(8, 5, 8, 5)  # 增加垂直边距
 
-        # 左侧：应用信息 - 适当增大字体
+        # 左侧：应用信息 - 增大字体到16px
         app_info_label = QLabel("🎭 AI换脸【秘灵】v1.0")
-        app_info_label.setStyleSheet("color: #495057; font-weight: bold; font-size: 13px;")
+        app_info_label.setStyleSheet("color: #495057; font-weight: bold; font-size: 16px;")
         status_layout.addWidget(app_info_label)
 
         # 中间：弹性空间
         status_layout.addStretch()
 
+        # 右侧进度区域（靠右显示）
+        progress_layout = QHBoxLayout()
+
+        # 进度标签
+        progress_label = QLabel("进度：")
+        progress_label.setStyleSheet("color: #495057; font-size: 16px; font-weight: 600;")
+        progress_layout.addWidget(progress_label)
+
+        # 进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimumWidth(250)
+        self.progress_bar.setMaximumWidth(250)
+        self.progress_bar.setMaximumHeight(18)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #ddd;
+                border-radius: 8px;
+                text-align: center;
+                font-weight: bold;
+                font-size: 16px;
+                background-color: #f8f9fa;
+            }
+            QProgressBar::chunk {
+                background-color: #007acc;
+                border-radius: 7px;
+            }
+        """)
+        progress_layout.addWidget(self.progress_bar)
+
+        # 状态文本（在进度条右侧）
+        self.status_label = QLabel("就绪")
+        self.status_label.setStyleSheet("color: #495057; font-size: 16px; font-weight: 600; margin-left: 8px;")
+        progress_layout.addWidget(self.status_label)
+
+        status_layout.addLayout(progress_layout)
+
         # 右侧：系统状态和控制按钮
         right_status_layout = QHBoxLayout()
 
-        # GPU内存配置按钮 - 增大字体
+        # GPU加速选项
+        self.gpu_checkbox = QCheckBox("🚀 GPU加速")
+        self.gpu_checkbox.setChecked(False)
+        self.gpu_checkbox.stateChanged.connect(self._on_gpu_checkbox_changed)
+        self.gpu_checkbox.setStyleSheet("font-size: 16px; font-weight: 600;")
+        right_status_layout.addWidget(self.gpu_checkbox)
+
+        # GPU状态标签
+        self.gpu_status_label = QLabel("检测中...")
+        self.gpu_status_label.setStyleSheet("color: #666666; font-size: 16px; margin-right: 5px;")
+        right_status_layout.addWidget(self.gpu_status_label)
+
+        # GPU配置按钮
+        self.gpu_config_button = QPushButton("🔧 一键配置GPU")
+        self.gpu_config_button.setStyleSheet("""
+            QPushButton {
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 3px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #45a049;
+            }
+        """)
+        self.gpu_config_button.clicked.connect(self._show_simple_gpu_install_dialog)
+        right_status_layout.addWidget(self.gpu_config_button)
+
+        # 性能优化按钮
+        perf_btn = QPushButton("⚡ 性能优化")
+        perf_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 3px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+            }
+        """)
+        perf_btn.setToolTip("🔧 性能优化设置")
+        perf_btn.clicked.connect(self._show_performance_dialog)
+        right_status_layout.addWidget(perf_btn)
+
+        # GPU内存配置按钮
         self.gpu_memory_button = QPushButton("💾 内存限制")
         self.gpu_memory_button.setStyleSheet("""
             QPushButton {
                 background-color: #007bff;
                 color: white;
                 border: none;
-                padding: 4px 10px;
+                padding: 6px 12px;
                 border-radius: 3px;
-                font-size: 12px;
+                font-size: 16px;
                 font-weight: bold;
             }
             QPushButton:hover {
@@ -436,93 +898,188 @@ class ModernFaceSwapGUI(QMainWindow):
         self.gpu_memory_button.clicked.connect(self._show_gpu_memory_config)
         right_status_layout.addWidget(self.gpu_memory_button)
 
-        # 系统状态标签 - 增大字体提高可读性
-        self.system_status_label = QLabel("系统: 初始化中...")
-        self.system_status_label.setStyleSheet("""
-            color: #495057;
-            font-size: 13px;
-            font-weight: 600;
-            padding: 4px 10px;
-            background-color: #e9ecef;
-            border-radius: 4px;
-            border: 1px solid #ced4da;
-        """)
-        right_status_layout.addWidget(self.system_status_label)
+
 
         status_layout.addLayout(right_status_layout)
 
         parent_layout.addWidget(status_frame)
 
-        # 初始化系统监控器（单例）
+        # 系统监控已移除，不再显示系统信息
         self.system_monitor = None
-        self.enable_performance_monitoring = False  # 禁用性能监测，避免界面卡顿
-
-        if self.enable_performance_monitoring:
-            self._init_system_monitor()
-
-            # 启动系统监控定时器 - 大幅减少更新频率
-            from PyQt5.QtCore import QTimer
-            self.monitor_timer = QTimer()
-            self.monitor_timer.timeout.connect(self._update_system_status)
-            self.monitor_timer.start(10000)  # 每10秒更新一次，大幅减少卡顿
-
-            # 立即更新一次状态
-            self._update_system_status()
-        else:
-            # 如果禁用监测，显示静态信息
-            self._show_static_system_info()
+        self.enable_performance_monitoring = False
 
     def _create_file_section(self, parent_layout):
         """创建文件选择区域"""
         file_group = QGroupBox("📁 文件选择")
+        file_group.setMinimumHeight(350)  # 增加最小高度，确保内容完整显示
+        file_group.setMaximumHeight(380)  # 增加最大高度，保持稳定
         parent_layout.addWidget(file_group)
 
         layout = QGridLayout(file_group)
-        layout.setSpacing(15)
-        layout.setContentsMargins(20, 25, 20, 20)
+        layout.setSpacing(20)  # 进一步增加间距
+        layout.setContentsMargins(20, 35, 20, 30)  # 增加更多内边距，利用控制面板节省的空间
+
+        # 输入框通用样式
+        input_style = """
+            QLineEdit {
+                padding: 8px 12px;
+                font-size: 12px;
+                border: 1px solid #ddd;
+                border-radius: 4px;
+                min-height: 20px;
+                background-color: white;
+            }
+            QLineEdit:focus {
+                border-color: #007acc;
+            }
+        """
+
+        # 浏览按钮通用样式
+        browse_button_style = """
+            QPushButton {
+                padding: 8px 16px;
+                font-size: 12px;
+                min-width: 80px;
+                max-width: 80px;
+                min-height: 20px;
+                border-radius: 4px;
+            }
+        """
 
         # 源人脸选择
         source_label = QLabel("源人脸图像:")
         source_label.setFont(QFont("Arial", 12))
         layout.addWidget(source_label, 0, 0)
         self.source_entry = QLineEdit()
+        self.source_entry.setStyleSheet(input_style)
         self.source_entry.setPlaceholderText("选择源人脸图像文件...")
         layout.addWidget(self.source_entry, 0, 1)
 
         source_btn = QPushButton("浏览")
+        source_btn.setStyleSheet(browse_button_style)
         source_btn.clicked.connect(self._select_source_file)
-        layout.addWidget(source_btn, 0, 2)
+        layout.addWidget(source_btn, 0, 2, Qt.AlignLeft | Qt.AlignVCenter)
 
         # 目标文件选择
         target_label = QLabel("目标图像/视频:")
         target_label.setFont(QFont("Arial", 12))
         layout.addWidget(target_label, 1, 0)
         self.target_entry = QLineEdit()
+        self.target_entry.setStyleSheet(input_style)
         self.target_entry.setPlaceholderText("选择目标图像或视频文件...")
         layout.addWidget(self.target_entry, 1, 1)
 
         target_btn = QPushButton("浏览")
+        target_btn.setStyleSheet(browse_button_style)
         target_btn.clicked.connect(self._select_target_file)
-        layout.addWidget(target_btn, 1, 2)
+        layout.addWidget(target_btn, 1, 2, Qt.AlignLeft | Qt.AlignVCenter)
 
         # 输出路径
         output_label = QLabel("输出路径:")
         output_label.setFont(QFont("Arial", 12))
         layout.addWidget(output_label, 2, 0)
         self.output_entry = QLineEdit()
+        self.output_entry.setStyleSheet(input_style)
         self.output_entry.setPlaceholderText("自动生成输出路径...")
         layout.addWidget(self.output_entry, 2, 1)
 
         output_btn = QPushButton("选择")
+        output_btn.setStyleSheet(browse_button_style)
         output_btn.clicked.connect(self._select_output_file)
-        layout.addWidget(output_btn, 2, 2)
+        layout.addWidget(output_btn, 2, 2, Qt.AlignLeft | Qt.AlignVCenter)
 
-        # 设置列宽比例
-        layout.setColumnStretch(1, 1)
+        # 背景替换选项
+        bg_label = QLabel("背景替换:")
+        bg_label.setFont(QFont("Arial", 12))
+        layout.addWidget(bg_label, 3, 0)
+
+        # 背景替换勾选框和模式选择在同一行
+        bg_row_layout = QHBoxLayout()
+        bg_row_layout.setSpacing(10)
+
+        self.background_checkbox = QCheckBox("启用背景替换")
+        self.background_checkbox.setChecked(False)
+        self.background_checkbox.stateChanged.connect(self._on_background_checkbox_changed)
+        bg_row_layout.addWidget(self.background_checkbox)
+
+        self.background_mode_combo = QComboBox()
+        self.background_mode_combo.addItems([
+            "BackgroundMattingV2 (推荐)",
+            "MODNet (快速)",
+            "U2Net (通用)",
+            "Rembg (简单)"
+        ])
+        self.background_mode_combo.setEnabled(False)
+        self.background_mode_combo.setMinimumWidth(200)
+        self.background_mode_combo.currentTextChanged.connect(self._on_background_mode_changed)
+        bg_row_layout.addWidget(self.background_mode_combo)
+
+        # 模型状态标签
+        self.background_status_label = QLabel("模型状态: 未检查")
+        self.background_status_label.setStyleSheet("color: #666666; font-size: 12px;")
+        self.background_status_label.setMinimumWidth(150)  # 设置最小宽度
+        bg_row_layout.addWidget(self.background_status_label)
+
+        # 下载模型按钮
+        self.download_model_btn = QPushButton("下载模型")
+        self.download_model_btn.setEnabled(False)
+        self.download_model_btn.setVisible(False)
+        self.download_model_btn.clicked.connect(self._download_background_model)
+        self.download_model_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #2196F3;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                padding: 5px 10px;
+                font-size: 12px;
+                min-width: 80px;
+            }
+            QPushButton:hover {
+                background-color: #1976D2;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+            }
+        """)
+        bg_row_layout.addWidget(self.download_model_btn)
+
+        bg_row_layout.addStretch()  # 添加弹性空间
+
+        bg_row_widget = QWidget()
+        bg_row_widget.setLayout(bg_row_layout)
+        layout.addWidget(bg_row_widget, 3, 1, 1, 2)  # 跨越两列，增加宽度
+
+        # 背景图片/文件夹选择
+        bg_source_label = QLabel("背景来源:")
+        bg_source_label.setFont(QFont("Arial", 12))
+        layout.addWidget(bg_source_label, 4, 0)
+
+        self.background_entry = QLineEdit()
+        self.background_entry.setStyleSheet(input_style)
+        self.background_entry.setPlaceholderText("选择背景图片或文件夹...")
+        self.background_entry.setEnabled(False)
+        layout.addWidget(self.background_entry, 4, 1)
+
+        # 统一的背景选择按钮
+        self.bg_select_btn = QPushButton("选择背景")
+        self.bg_select_btn.setStyleSheet(browse_button_style)
+        self.bg_select_btn.clicked.connect(self._select_background)
+        self.bg_select_btn.setEnabled(False)
+        self.bg_select_btn.setMinimumWidth(100)
+        layout.addWidget(self.bg_select_btn, 4, 2, Qt.AlignLeft | Qt.AlignVCenter)
+
+        # 设置列宽比例 - 给按钮列更多空间
+        layout.setColumnStretch(0, 0)  # 标签列固定宽度
+        layout.setColumnStretch(1, 2)  # 输入框列
+        layout.setColumnStretch(2, 1)  # 按钮列
 
     def _create_control_section(self, parent_layout):
         """创建控制面板"""
         control_group = QGroupBox("🎛️ 控制面板")
+        control_group.setMinimumHeight(80)  # 设置固定最小高度
+        control_group.setMaximumHeight(100)  # 设置最大高度，保持紧凑
         parent_layout.addWidget(control_group)
 
         # 使用垂直布局来创建两行
@@ -530,16 +1087,32 @@ class ModernFaceSwapGUI(QMainWindow):
         main_layout.setContentsMargins(20, 25, 20, 20)
         main_layout.setSpacing(10)
 
-        # 第一行：主要操作按钮
+        # 第一行：主要操作按钮（缩小按钮尺寸）
         first_row = QHBoxLayout()
+
+        # 按钮通用样式 - 增大字体到16px
+        button_style = """
+            QPushButton {
+                padding: 6px 10px;
+                font-size: 16px;
+                font-weight: bold;
+                border-radius: 4px;
+                min-height: 32px;
+                max-height: 36px;
+                min-width: 90px;
+                max-width: 140px;
+            }
+        """
 
         # 初始化AI按钮
         self.init_button = QPushButton("🤖 初始化AI")
+        self.init_button.setStyleSheet(button_style)
         self.init_button.clicked.connect(self._manual_init_ai)
         first_row.addWidget(self.init_button)
 
         # 开始按钮
         self.start_button = QPushButton("🚀 开始换脸")
+        self.start_button.setStyleSheet(button_style)
         self.start_button.clicked.connect(self._start_face_swap)
         self.start_button.setEnabled(False)
         first_row.addWidget(self.start_button)
@@ -547,70 +1120,27 @@ class ModernFaceSwapGUI(QMainWindow):
         # 停止按钮
         self.stop_button = QPushButton("⏹ 停止")
         self.stop_button.setObjectName("stopButton")
+        self.stop_button.setStyleSheet(button_style)
         self.stop_button.clicked.connect(self._stop_face_swap)
         self.stop_button.setEnabled(False)
         first_row.addWidget(self.stop_button)
 
         # 打开文件夹按钮
         folder_btn = QPushButton("📁 打开输出文件夹")
+        folder_btn.setStyleSheet(button_style)
         folder_btn.clicked.connect(self._open_output_folder)
         first_row.addWidget(folder_btn)
 
-        main_layout.addLayout(first_row)
-
-        # 第二行：选项和设置
-        second_row = QHBoxLayout()
-
-        # GPU选项 - 根据检测结果智能设置
-        self.gpu_checkbox = QCheckBox("🚀 GPU加速")
-        self.gpu_checkbox.setChecked(False)  # 默认关闭，由_update_gpu_status设置
-        self.gpu_checkbox.stateChanged.connect(self._on_gpu_checkbox_changed)
-        second_row.addWidget(self.gpu_checkbox)
-
-        # GPU状态标签
-        self.gpu_status_label = QLabel("检测中...")
-        self.gpu_status_label.setStyleSheet("color: #666666; font-size: 11px;")
-        second_row.addWidget(self.gpu_status_label)
-
-        # 系统状态标签将在底部创建
-
-        # GPU配置按钮 (当GPU不可用时显示)
-        self.gpu_config_button = QPushButton("� 一键配置GPU")
-        self.gpu_config_button.setObjectName("gpuConfigButton")
-        self.gpu_config_button.setStyleSheet("""
-            QPushButton#gpuConfigButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                padding: 5px 15px;
-                border-radius: 3px;
-                font-weight: bold;
-            }
-            QPushButton#gpuConfigButton:hover {
-                background-color: #45a049;
-            }
-        """)
-        self.gpu_config_button.clicked.connect(self._show_simple_gpu_install_dialog)
-        self.gpu_config_button.setVisible(False)  # 默认隐藏
-        second_row.addWidget(self.gpu_config_button)
-
-        # GPU内存配置按钮移到底部状态栏
-
-        # 多人脸选择选项
+        # 多人脸选择选项 - 直接添加到按钮行，节省空间
         self.multi_face_checkbox = QCheckBox("🎯 多人脸选择")
         self.multi_face_checkbox.setChecked(False)
-        second_row.addWidget(self.multi_face_checkbox)
-
-        # 性能优化按钮 - 添加详细说明
-        perf_btn = QPushButton("⚡ 性能优化")
-        perf_btn.setToolTip("🔧 性能优化设置：\n• 调整处理线程数\n• 设置内存使用限制\n• 优化GPU显存分配\n• 配置批处理大小\n• 启用/禁用特定优化算法")
-        perf_btn.clicked.connect(self._show_performance_dialog)
-        second_row.addWidget(perf_btn)
+        self.multi_face_checkbox.setStyleSheet("margin-left: 15px; font-size: 16px;")
+        first_row.addWidget(self.multi_face_checkbox)
 
         # 添加弹性空间，让控件左对齐
-        second_row.addStretch()
+        first_row.addStretch()
 
-        main_layout.addLayout(second_row)
+        main_layout.addLayout(first_row)
 
     def _on_gpu_checkbox_changed(self, state):
         """GPU选项状态改变时的处理"""
@@ -1136,9 +1666,12 @@ class ModernFaceSwapGUI(QMainWindow):
         """创建日志和状态面板"""
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 0, 0, 0)  # 移除外层边距
+        layout.setSpacing(0)  # 移除间距
+
         # 日志区域 - 减小边框和内边距
         log_group = QGroupBox("📋 执行日志")
-       
+
         log_group.setStyleSheet("""
             QGroupBox {
                 font-weight: bold;
@@ -1157,11 +1690,11 @@ class ModernFaceSwapGUI(QMainWindow):
         layout.addWidget(log_group)
 
         log_layout = QVBoxLayout(log_group)
-        log_layout.setContentsMargins(8, 8, 8, 8)  # 减小内边距防止超出容器
+        log_layout.setContentsMargins(15, 15, 15, 15)  # 与上方模块保持一致的内边距
 
         self.log_text = QTextEdit()
-        self.log_text.setMinimumHeight(200)  # 减小最小高度
-        self.log_text.setMaximumHeight(300)  # 减小最大高度，防止超出容器
+        # 让日志区域自适应高度，撑满剩余空间
+        self.log_text.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         # 设置日志文字样式和滚动
         self.log_text.setStyleSheet("""
@@ -1186,38 +1719,7 @@ class ModernFaceSwapGUI(QMainWindow):
         self._log_message("=== AI换脸应用程序日志 ===", "INFO")
         self._log_message("点击'🤖 初始化AI'开始使用", "INFO")
 
-        # 状态栏 - 减小样式占用空间
-        status_group = QGroupBox("📊 状态")
-        status_group.setStyleSheet("""
-            QGroupBox {
-                font-weight: bold;
-                font-size: 13px;
-                border: 1px solid #ddd;
-                border-radius: 4px;
-                margin-top: 5px;
-                padding-top: 5px;
-            }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 8px;
-                padding: 0 5px 0 5px;
-            }
-        """)
-        layout.addWidget(status_group)
-
-        status_layout = QHBoxLayout(status_group)
-        status_layout.setContentsMargins(8, 8, 8, 8)  # 减小内边距
-
-        self.status_label = QLabel("就绪")
-        self.status_label.setFont(QFont("Microsoft YaHei", 12))  # 减小字体大小
-        status_layout.addWidget(self.status_label)
-
-        status_layout.addStretch()
-
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setMinimumWidth(300)
-        self.progress_bar.setValue(0)
-        status_layout.addWidget(self.progress_bar)
+        # 移除状态栏，进度条已移至底部状态栏
 
         return panel
 
@@ -1475,8 +1977,15 @@ class ModernFaceSwapGUI(QMainWindow):
             has_output = bool(self.output_path) if self.output_path else False
             has_swapper = self.face_swapper is not None
 
+            # 检查背景替换设置
+            background_ready = True
+            if hasattr(self, 'background_checkbox') and self.background_checkbox.isChecked():
+                has_background = bool(self.background_path or self.background_folder_path)
+                if not has_background:
+                    background_ready = False
+
             # 确保ready是布尔值
-            ready = bool(has_source and has_target and has_output and has_swapper)
+            ready = bool(has_source and has_target and has_output and has_swapper and background_ready)
 
             # 安全更新按钮状态
             if hasattr(self, 'start_button') and self.start_button is not None:
@@ -1494,6 +2003,8 @@ class ModernFaceSwapGUI(QMainWindow):
                     self._update_status("请选择目标文件")
                 elif not has_output:
                     self._update_status("请设置输出路径")
+                elif not background_ready:
+                    self._update_status("请选择背景图片或文件夹")
 
         except Exception as e:
             print(f"_check_ready_to_start error: {e}")
@@ -1686,6 +2197,23 @@ class ModernFaceSwapGUI(QMainWindow):
         selected_face_indices = getattr(self, 'selected_face_indices', None)
         reference_frame_index = getattr(self, 'selected_frame_index', None)
 
+        # 获取背景替换参数
+        background_enabled = self.background_checkbox.isChecked()
+        background_mode = self._get_background_mode()
+
+        # 检查背景替换设置
+        if background_enabled:
+            if not self.background_path and not self.background_folder_path:
+                QMessageBox.warning(self, "警告", "已启用背景替换但未选择背景图片或文件夹！\n将跳过背景替换。")
+                background_enabled = False
+            else:
+                bg_info = f"模式: {background_mode}"
+                if self.background_path:
+                    bg_info += f", 背景: {Path(self.background_path).name}"
+                elif self.background_folder_path:
+                    bg_info += f", 背景文件夹: {Path(self.background_folder_path).name}"
+                self._log_message(f"启用背景替换 - {bg_info}", "INFO")
+
         self.worker = ProcessWorker(
             self.face_swapper,
             self.source_path,
@@ -1693,7 +2221,11 @@ class ModernFaceSwapGUI(QMainWindow):
             self.output_path,
             target_face_index,
             selected_face_indices,
-            reference_frame_index
+            reference_frame_index,
+            background_enabled,
+            background_mode,
+            self.background_path,
+            self.background_folder_path
         )
 
         # 连接信号
@@ -1701,6 +2233,7 @@ class ModernFaceSwapGUI(QMainWindow):
         self.worker.log_message.connect(self._log_message)
         self.worker.finished.connect(self._on_process_finished)
         self.worker.preview_updated.connect(self._update_preview)
+        self.worker.model_fallback_occurred.connect(self._on_model_fallback)
 
         # 开始处理
         self.worker.start()
@@ -1814,6 +2347,10 @@ class ModernFaceSwapGUI(QMainWindow):
     def closeEvent(self, event):
         """程序关闭事件"""
         try:
+            # 停止所有定时器，避免QBasicTimer错误
+            if hasattr(self, 'monitor_timer'):
+                self.monitor_timer.stop()
+
             # 如果正在处理，先停止
             if self.is_processing and self.worker:
                 self._log_message("程序正在关闭，停止当前处理...", "INFO")
@@ -1983,6 +2520,288 @@ class ModernFaceSwapGUI(QMainWindow):
 
         except Exception as e:
             self._log_message(f"清理缓存失败: {e}", "ERROR")
+
+    def _on_background_checkbox_changed(self, state):
+        """背景替换选项状态改变时的处理"""
+        enabled = state == 2  # 选中状态
+
+        # 启用/禁用相关控件
+        self.background_mode_combo.setEnabled(enabled)
+        self.background_entry.setEnabled(enabled)
+        self.bg_select_btn.setEnabled(enabled)
+
+        if enabled:
+            self._log_message("已启用背景替换功能", "INFO")
+            # 检查当前选择的模型状态
+            self._check_background_model_status()
+        else:
+            self._log_message("已禁用背景替换功能", "INFO")
+            # 清空背景路径
+            self.background_path = None
+            self.background_folder_path = None
+            self.background_entry.setText("")
+            # 隐藏模型状态和下载按钮
+            self.background_status_label.setText("模型状态: 未检查")
+            self.download_model_btn.setVisible(False)
+
+    def _on_background_mode_changed(self, mode_text):
+        """背景替换模式改变时的处理"""
+        if hasattr(self, 'background_checkbox') and self.background_checkbox.isChecked():
+            self._check_background_model_status()
+
+    def _check_background_model_status(self):
+        """检查背景模型状态"""
+        try:
+            from core.background_replacer import BackgroundReplacer
+
+            mode = self._get_background_mode()
+            replacer = BackgroundReplacer(mode=mode, lazy_init=True)
+
+            # 检查模型可用性
+            available, message = replacer.check_model_availability(mode)
+
+            if available:
+                self.background_status_label.setText("模型状态: ✅ 已就绪")
+                self.background_status_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+                self.download_model_btn.setVisible(False)
+            else:
+                self.background_status_label.setText("模型状态: ❌ 需要下载")
+                self.background_status_label.setStyleSheet("color: #F44336; font-size: 12px;")
+                self.download_model_btn.setVisible(True)
+                self.download_model_btn.setEnabled(True)
+
+        except Exception as e:
+            self.background_status_label.setText(f"模型状态: ❌ 检查失败")
+            self.background_status_label.setStyleSheet("color: #F44336; font-size: 12px;")
+            self._log_message(f"检查背景模型状态失败: {e}", "ERROR")
+
+    def _handle_background_model_fallback(self, status):
+        """处理背景模型回退状态"""
+        if status['fallback_occurred']:
+            # 更新下拉菜单到实际使用的模式
+            self._update_background_mode_combo(status['current_mode'])
+
+            # 显示回退状态
+            original_display = self._get_mode_display_name(status['original_mode'])
+            current_display = self._get_mode_display_name(status['current_mode'])
+
+            self.background_status_label.setText(f"模型状态: ⚠️ 已回退")
+            self.background_status_label.setStyleSheet("color: #FF9800; font-size: 12px;")
+            self.download_model_btn.setVisible(False)
+
+            # 记录详细的回退信息
+            self._log_message(f"背景模型回退: {original_display} → {current_display}", "WARNING")
+            if status.get('fallback_reason'):
+                self._log_message(f"回退原因: {status['fallback_reason']}", "WARNING")
+
+            return True
+        return False
+
+    def _download_background_model(self):
+        """下载背景模型"""
+        try:
+            from core.background_replacer import BackgroundReplacer
+            from PyQt5.QtCore import QThread, pyqtSignal
+
+            mode = self._get_background_mode()
+
+            # 创建下载线程
+            class ModelDownloadThread(QThread):
+                progress_updated = pyqtSignal(int, int, str)
+                download_finished = pyqtSignal(bool, str)
+
+                def __init__(self, mode):
+                    super().__init__()
+                    self.mode = mode
+
+                def run(self):
+                    try:
+                        replacer = BackgroundReplacer(mode=self.mode, lazy_init=True)
+
+                        def progress_callback(current, total, message):
+                            self.progress_updated.emit(current, total, message)
+
+                        replacer.initialize_async(progress_callback)
+
+                        if replacer.is_available():
+                            status = replacer.get_model_status()
+                            if status['fallback_occurred']:
+                                self.download_finished.emit(True, f"模型下载完成，但回退到了 {status['current_mode']} 模式")
+                            else:
+                                self.download_finished.emit(True, "模型下载完成")
+                        else:
+                            error = replacer.get_initialization_error()
+                            self.download_finished.emit(False, f"模型下载失败: {error}")
+
+                    except Exception as e:
+                        self.download_finished.emit(False, f"下载过程中出错: {e}")
+
+            # 禁用下载按钮，显示下载状态
+            self.download_model_btn.setEnabled(False)
+            self.download_model_btn.setText("下载中...")
+            self.background_status_label.setText("模型状态: 🔄 下载中...")
+            self.background_status_label.setStyleSheet("color: #2196F3; font-size: 12px;")
+
+            # 启动下载线程
+            self.download_thread = ModelDownloadThread(mode)
+            self.download_thread.progress_updated.connect(self._on_download_progress)
+            self.download_thread.download_finished.connect(self._on_download_finished)
+            self.download_thread.start()
+
+        except Exception as e:
+            self._log_message(f"启动模型下载失败: {e}", "ERROR")
+            self.download_model_btn.setEnabled(True)
+            self.download_model_btn.setText("下载模型")
+
+    def _on_download_progress(self, current, total, message):
+        """下载进度更新"""
+        progress = int((current / total) * 100) if total > 0 else 0
+        self.background_status_label.setText(f"模型状态: 🔄 下载中... {progress}%")
+        self._log_message(f"模型下载进度: {message} ({current}/{total})", "INFO")
+
+    def _on_download_finished(self, success, message):
+        """下载完成"""
+        if success:
+            # 检查是否发生了回退
+            try:
+                from core.background_replacer import BackgroundReplacer
+                mode = self._get_background_mode()
+                replacer = BackgroundReplacer(mode=mode, lazy_init=True)
+                status = replacer.get_model_status()
+
+                # 处理回退状态
+                if not self._handle_background_model_fallback(status):
+                    # 没有回退，正常完成
+                    self.background_status_label.setText("模型状态: ✅ 已就绪")
+                    self.background_status_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+                    self.download_model_btn.setVisible(False)
+                    self._log_message(f"背景模型下载成功: {message}", "SUCCESS")
+
+            except Exception as e:
+                # 如果检查状态失败，仍然显示成功
+                self.background_status_label.setText("模型状态: ✅ 已就绪")
+                self.background_status_label.setStyleSheet("color: #4CAF50; font-size: 12px;")
+                self.download_model_btn.setVisible(False)
+                self._log_message(f"背景模型下载成功: {message}", "SUCCESS")
+                self._log_message(f"状态检查失败: {e}", "WARNING")
+        else:
+            self.background_status_label.setText("模型状态: ❌ 下载失败")
+            self.background_status_label.setStyleSheet("color: #F44336; font-size: 12px;")
+            self.download_model_btn.setEnabled(True)
+            self.download_model_btn.setText("重试下载")
+            self._log_message(f"背景模型下载失败: {message}", "ERROR")
+
+        # 清理下载线程
+        if hasattr(self, 'download_thread'):
+            self.download_thread.deleteLater()
+            delattr(self, 'download_thread')
+
+    def _on_model_fallback(self, status):
+        """处理模型回退信号"""
+        try:
+            # 处理回退状态
+            self._handle_background_model_fallback(status)
+        except Exception as e:
+            self._log_message(f"处理模型回退状态失败: {e}", "ERROR")
+
+    def _select_background(self):
+        """统一的背景选择方法，支持文件和文件夹"""
+        from PyQt5.QtWidgets import QMessageBox
+
+        # 创建选择对话框
+        reply = QMessageBox.question(
+            self, "选择背景类型",
+            "请选择背景类型：\n\n• 是：选择单张图片（固定背景）\n• 否：选择文件夹（随机背景）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Yes
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            # 选择单张图片
+            file_path, _ = QFileDialog.getOpenFileName(
+                self, "选择背景图片", "",
+                "图像文件 (*.jpg *.jpeg *.png *.bmp *.tiff);;所有文件 (*.*)"
+            )
+            if file_path:
+                self.background_path = file_path
+                self.background_folder_path = None  # 清空文件夹路径
+                self.background_entry.setText(file_path)
+                self._log_message(f"已选择背景图片: {Path(file_path).name}", "INFO")
+
+        elif reply == QMessageBox.StandardButton.No:
+            # 选择文件夹
+            folder_path = QFileDialog.getExistingDirectory(self, "选择背景文件夹")
+            if folder_path:
+                # 检查文件夹中是否有图片文件
+                image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+                image_files = []
+
+                for file_path in Path(folder_path).iterdir():
+                    if file_path.is_file() and file_path.suffix.lower() in image_extensions:
+                        image_files.append(file_path)
+
+                if image_files:
+                    self.background_folder_path = folder_path
+                    self.background_path = None  # 清空单个图片路径
+                    self.background_entry.setText(f"{folder_path} ({len(image_files)}张图片)")
+                    self._log_message(f"已选择背景文件夹: {Path(folder_path).name} (包含{len(image_files)}张图片)", "INFO")
+                else:
+                    QMessageBox.warning(self, "警告", "选择的文件夹中没有找到图片文件！")
+
+    def _get_background_mode(self):
+        """获取当前选择的背景替换模式"""
+        mode_text = self.background_mode_combo.currentText()
+        if "BackgroundMattingV2" in mode_text:
+            return "backgroundmattingv2"
+        elif "MODNet" in mode_text:
+            return "modnet"
+        elif "U2Net" in mode_text:
+            return "u2net"
+        elif "Rembg" in mode_text:
+            return "rembg"
+        else:
+            return "backgroundmattingv2"  # 默认
+
+    def _get_mode_display_name(self, mode):
+        """获取模式的显示名称"""
+        mode_map = {
+            'backgroundmattingv2': "BackgroundMattingV2 (推荐)",
+            'modnet': "MODNet (快速)",
+            'u2net': "U2Net (通用)",
+            'rembg': "Rembg (简单)"
+        }
+        return mode_map.get(mode.lower(), mode)
+
+    def _update_background_mode_combo(self, actual_mode):
+        """更新背景模式下拉菜单到实际使用的模式"""
+        display_name = self._get_mode_display_name(actual_mode)
+
+        # 查找对应的索引
+        for i in range(self.background_mode_combo.count()):
+            if display_name in self.background_mode_combo.itemText(i):
+                # 临时断开信号连接，避免触发检查
+                self.background_mode_combo.currentTextChanged.disconnect()
+                self.background_mode_combo.setCurrentIndex(i)
+                # 重新连接信号
+                self.background_mode_combo.currentTextChanged.connect(self._on_background_mode_changed)
+                break
+
+    def _get_random_background(self):
+        """从背景文件夹中随机选择一张背景图片"""
+        if not self.background_folder_path:
+            return None
+
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff'}
+        image_files = []
+
+        for file_path in Path(self.background_folder_path).iterdir():
+            if file_path.is_file() and file_path.suffix.lower() in image_extensions:
+                image_files.append(file_path)
+
+        if image_files:
+            import random
+            return str(random.choice(image_files))
+        return None
 
 def main(gpu_config=None):
     """主函数"""

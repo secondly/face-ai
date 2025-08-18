@@ -140,3 +140,6 @@ test_videos/
 
 # coda虚拟环境
 cuda_env/
+
+# 模型文件
+models/
